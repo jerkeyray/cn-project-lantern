@@ -13,11 +13,12 @@ LATERAL = "traffic/attacks/lateral.py"
 
 
 class Case:
-    def __init__(self, name, purpose, attacks=(), attack_duration=30.0,
-                 normal_rate=1.5, notes=""):
+    def __init__(
+        self, name, purpose, attacks=(), attack_duration=30.0, normal_rate=1.5, notes=""
+    ):
         self.name = name
         self.purpose = purpose
-        self.attacks = list(attacks)          # (module, extra_args) pairs
+        self.attacks = list(attacks)  # (module, extra_args) pairs
         self.attack_duration = attack_duration
         self.normal_rate = normal_rate
         self.notes = notes
@@ -48,14 +49,14 @@ CASES = {
     "C3": Case(
         "C3",
         purpose="Test high-rate anomaly detection",
-        attacks=[(DOS, ["--duration", "20", "--pps", str(config.DOS_PPS * 3)])],
+        attacks=[(DOS, ["--duration", "20", "--pps", "1500"])],
         notes="Volumetric flooding: the attack family nine of the ten recent "
-              "surveyed papers target.",
+        "surveyed papers target.",
     ),
     "C4": Case(
         "C4",
         purpose="Test repeated failed-connection detection",
-        attacks=[(BRUTEFORCE, ["--attempts", str(config.BRUTEFORCE_ATTEMPTS * 3)])],
+        attacks=[(BRUTEFORCE, ["--attempts", "60"])],
         notes="Password guessing against the authentication server.",
     ),
     "C5": Case(
@@ -104,10 +105,10 @@ CASES = {
         attacks=[
             (LATERAL, ["--dwell", "4.0"]),
             (PORTSCAN, ["--delay", "0.05"]),
-            (BRUTEFORCE, ["--attempts", str(config.BRUTEFORCE_ATTEMPTS * 3)]),
+            (BRUTEFORCE, ["--attempts", "60"]),
         ],
         notes=(
-            "Every attack class in one run, with mitigation disabled so that "
+            "Lateral movement, port scan, and SYN retry simulation in one run, with mitigation disabled so that "
             "neither detector can destroy the traffic the other still needs to "
             "see. Attack order matters here -- see the comment above."
         ),

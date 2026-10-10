@@ -1,259 +1,198 @@
-# Lantern — Graph-Based SDN Controller-Integrated IDS
+# Lantern
 
-An intrusion detection system that runs inside a Ryu SDN controller, detects
-attacks on live OpenFlow traffic, and installs blocking rules automatically.
+### Controller-integrated SDN intrusion detection
 
-It exists to answer one question:
+**Six hosts · Two OpenFlow switches · 95 evaluation trials · 67 passing tests**
 
-> Does adding graph-based host-communication analysis to an SDN
-> controller-integrated IDS improve the detection of lateral movement compared
-> with a conventional per-flow detector, while maintaining acceptable mitigation
-> latency and legitimate-traffic disruption?
+[Results](docs/results.md) · [Methodology](docs/evaluation.md) ·
+[Evidence](submission/) · [Submission guide](docs/submission.md) ·
+[Team](AUTHORS.md)
 
-So the deliverable is not really "an IDS" — it is a **controlled comparison**.
-Two detectors observe byte-identical traffic inside the same live control loop:
+Lantern compares a threshold baseline with a host-communication graph detector
+inside a Ryu controller. Both receive the same observed traffic window. The
+experiment asks whether graph features improve identification of a controlled
+sequential-contact scenario, and measures the cost of detecting and blocking it.
 
-| | Per-flow baseline | Graph-based detector |
-|---|---|---|
-| Sees | one host's flows at a time | the whole host-communication graph |
-| Method | thresholds on rate, port count, failed connections | per-host anomaly score `S(h,t)` over graph features |
-| Catches | port scans, DoS, brute force | lateral movement |
-| Costs | almost nothing | measurably more (reported, not hidden) |
+The testbed has six hosts and two OpenFlow switches. All network experiments
+run inside isolated Docker containers with `--network none`.
 
-The baseline represents the approach used by essentially every paper in the
-project's literature survey. It is built to be a fair opponent, not a straw man.
+## Setup and quick checks
 
-## What makes the comparison valid
+Requirements: Docker with Linux containers, Python 3 on the host, and Git.
+The container supplies Ryu, Mininet, Open vSwitch, Scapy, and analysis tools.
 
-Four decisions do most of the work, and each is enforced in code rather than
-left as an intention:
-
-1. **Both detectors receive the same `Window` object.** Neither can see traffic
-   the other cannot (`lantern/app.py`, `on_window_closed`).
-2. **Mitigation is off during comparison runs.** If both detectors installed
-   drop rules, the faster one would destroy the traffic the other still needed;
-   the comparison would measure the race, not the detectors. Enforced by the
-   mitigator mode in `lantern/decision.py`, forced to `none` for case C7.
-3. **The lateral-movement scenario refuses to run if it is loud enough for the
-   baseline to catch on volume alone** (`traffic/attacks/lateral.py`,
-   `check_pacing`). A scenario that drifts loud is a scenario bug, and it fails
-   noisily rather than quietly handing the baseline a win.
-4. **Thresholds are tuned on normal traffic only** (case C1), never on the
-   attacks they are then scored against.
-5. **An alert is only credited to an attack that was still running**
-   (`experiments/analyze.py`, `effective_windows`). Every attack in a run comes
-   from the same compromised host, so the source address cannot separate them;
-   left uncapped, the grace period let a port-scan alert be credited to the
-   lateral-movement attack that ran before it. That one bug reported the
-   per-flow baseline as catching lateral movement 55% of the time. It catches
-   it 0% of the time.
-
-## Requirements
-
-Docker. Nothing else — Mininet, Open vSwitch and Ryu all live in the image.
-Everything runs on macOS (Apple Silicon included) and on Linux.
-
-## Quick start
-
-```bash
-make build           # build the container image
-make datapath-check  # gate: does the userspace datapath forward traffic?
-make test            # unit tests, seconds, no emulation needed
-make run-case CASE=C5 TRIALS=1   # watch the graph detector catch lateral movement
-make analyze         # tables and figures from whatever runs exist
+```sh
+make build
+make validate
+make datapath-check
+make integration
 ```
 
-`make datapath-check` is not optional the first time. Docker Desktop's LinuxKit
-kernel has no `openvswitch` module, so every bridge runs on the userspace
-(netdev) datapath; if that does not forward, nothing else in the project will.
-If it fails, run under a real kernel instead:
+Unit tests and analysis do not require privileged containers. Network experiments
+require privileges to create namespaces and virtual interfaces. Userspace OVS
+requires checksum and segmentation offloads to be disabled; the runner does this
+before generating traffic. A ping-only check cannot verify TCP service delivery.
 
-```bash
-colima start --vm-type=vz --cpu 4 --memory 8
+For an individual demonstration:
+
+```sh
+make run-case CASE=C5
 ```
 
-## The experiment
+The default demonstration observes without blocking. To demonstrate graph
+mitigation, use a distinct label so existing evidence is never overwritten:
 
-Seven cases, exactly as the project report defines them
-(`experiments/cases.py`):
-
-| Case | Traffic | Purpose |
-|---|---|---|
-| C1 | normal only | measure the false-positive rate, and set the thresholds |
-| C2 | port scan | scanning detection — the baseline should win this one |
-| C3 | denial of service | high-rate anomaly detection |
-| C4 | brute force | repeated failed connections |
-| C5 | lateral movement | **the case the project exists for** |
-| C6 | mixed normal + attack | legitimate-traffic disruption |
-| C7 | every attack, no mitigation | the headline comparison |
-
-```bash
-make plan TRIALS=3      # print the plan and a time estimate, run nothing
-make run-all TRIALS=3   # full sweep, roughly 100 minutes
-make analyze
+```sh
+docker run --rm --privileged --network none -v "$PWD:/opt/lantern" \
+  lantern-sdn-ids python3 -m experiments.run_case \
+  --case C5 --label demo-C5-graph --mitigator graph --seed 9101
 ```
 
-The sweep runs two passes. The **detection pass** disables mitigation so the
-coverage comparison is uncontaminated. The **mitigation pass** re-runs the
-attack cases with one detector actuating at a time, which is where the timing
-figures come from. Runs are labelled separately on disk (`C2` versus
-`C2-mit-graph`) so the analysis keeps them apart.
+## Reproduce the evaluation
 
-**Every run gets its own container**, and that matters more than it sounds.
-`scripts/run_sweep.sh` drives the loop from the host rather than looping inside
-one long-lived container, because after roughly twenty consecutive Mininet
-start/stops the container's networking degrades: traffic generators are starved,
-the PacketIn rate drops by an order of magnitude, and runs stop producing enough
-windows for the graph detector to finish profiling. Those runs do not fail —
-they quietly show up in the results as "the detector missed it". In one 29-run
-sweep this silently cost four runs before it was caught.
-
-## Results
-
-From 29 runs: 3 trials of each case C1–C7 (detection pass) plus one run per
-actuating detector for C2–C5 (mitigation pass).
-
-**Detection coverage by attack class** — did the detector flag the attacking
-host while the attack was running?
-
-| Attack class | Instances | Per-flow baseline | Graph-based | Graph MTTD |
-|---|---|---|---|---|
-| **lateral movement** | 11 | **0%** | **100%** | 5.86 s |
-| port scan | 11 | 91% | 82% | 4.66 s |
-| brute force | 8 | 100% | 25% | 4.53 s |
-| denial of service | 5 | 100% | 0% | — |
-
-The baseline winning three classes out of four is the point, not a defect. The
-graph detector is not a better detector; it is a differently blind one, and it
-sees the single thing per-flow analysis structurally cannot. A method that won
-everywhere would mean the baseline had been built to lose.
-
-**Safety.** Zero false positives from either detector across three normal-only
-runs, 100% precision on the attack cases (all 46 alerts matched a real attack),
-and zero innocent hosts blocked in any run.
-
-**Cost** (Research Gap 4). The graph detector costs ~70x more per window than
-the baseline — 4.05 ms against 0.09 ms — which is 0.04% of a ten-second window.
-Controller CPU averaged 1.9% and RSS 69 MB. Betweenness centrality alone is
-2.95 ms of that 4.05 ms, and it is the term that grows with host count, so it is
-also the best available evidence on Research Gap 5 at this scale.
-
-**Closing the loop.** On identical C5 traffic, the baseline installed no rules
-because it never saw the attack; the graph detector installed two (one per
-switch), barrier-confirmed in 7 ms, containing the attacker 5.65 s after its
-first malicious packet. Rule installation degraded to 311 ms under the DoS
-flood — mitigation is slowest exactly when it is most needed.
-
-## Output
-
-`make analyze` writes to `results/`:
-
-- `tables/coverage_by_class.csv` — **the headline**: per attack class, what
-  fraction each detector caught, and how fast
-- `tables/attacks_detail.csv` — every individual attack, so an odd trial can be
-  found rather than hidden inside a mean
-- `tables/timing.csv` — decision latency, rule-installation latency (FlowMod to
-  switch barrier confirmation), and time to containment
-- `tables/overhead.csv` — controller CPU and memory, PacketIn volume, and what
-  the graph detector costs per window relative to the baseline
-- `tables/false_positives.csv` — C1, the run that sets the thresholds
-- `tables/disruption.csv` — innocent hosts caught by mitigation
-- `figs/coverage_by_class.png`, `figs/detector_cost.png`
-
-Coverage is reported **class-agnostically** by default: did the detector flag
-the attacking host while the attack was running? The graph detector only ever
-emits "lateral movement" and makes no claim to name which attack it is looking
-at, so scoring it on class accuracy would penalise it for something it never
-claimed. Class-exact counts are reported alongside, because the baseline *does*
-make that claim.
-
-## How it fits together
-
-```
-Mininet topology ──▶ OpenFlow switches ──▶ PacketIn + FlowStats
-                                                │
-                              ┌─────────────────▼──────────────────┐
-                              │          Ryu controller            │
-                              │                                    │
-                              │  FlowCollector ─▶ WindowAggregator │
-                              │                       │            │
-                              │        ┌──────────────┴─────────┐  │
-                              │        ▼                        ▼  │
-                              │  BaselineDetector        GraphDetector
-                              │        └──────────┬─────────────┘  │
-                              │                   ▼                │
-                              │            AlertManager            │
-                              │                   ▼                │
-                              │          MitigationEngine          │
-                              └───────────────────┬────────────────┘
-                                                  ▼
-                                    OpenFlow drop / redirect rules
+```sh
+make plan
+make campaign CAMPAIGN=results/campaigns/my-submission
+make analyze CAMPAIGN=results/campaigns/my-submission
 ```
 
-| File | Role |
-|---|---|
-| `lantern/config.py` | every threshold, weight and topology fact, in one place |
-| `lantern/collector.py` | PacketIn + flow-stats ingest (Algorithm A) |
-| `lantern/features.py` | counter diffing and windowing — no Ryu import, so it is unit testable |
-| `lantern/detector_baseline.py` | threshold rules (Algorithm B) |
-| `lantern/graph_builder.py` | `G_t=(V_t,E_t)` and per-host rolling profiles |
-| `lantern/detector_graph.py` | graph features → z-scores → `S(h,t)` (Algorithm C) |
-| `lantern/decision.py` | severity, dedupe, action choice, actuation gating |
-| `lantern/mitigation.py` | FlowMod + barrier-confirmed timing (Algorithm D) |
-| `lantern/metrics.py` | JSONL event log and controller resource sampling |
-| `experiments/run_all.py` | plans the sweep (it does not run it) |
-| `scripts/run_sweep.sh` | runs the sweep, one fresh container per run |
+A campaign runs a pilot, three normal-only calibration trials, and 95 evaluation
+trials. The requested matrix is 35 detection + 50 mitigation + 5 benign variation
++ 5 reversed-order runs. Expect several hours; the pilot prints a measured
+estimate. Every trial gets a fresh container. Failed attempts remain on disk and
+are retried once; two failures stop the campaign for diagnosis.
 
-## Three detector design decisions worth knowing before changing anything
+For staged execution or resumption:
 
-**Directional graph features.** The communication graph is undirected, but
-degree, new-neighbour ratio and port diversity are computed over the peers a
-host *reached out to*, not everyone it exchanged packets with. Without that
-distinction, an attacker contacting four machines makes all four gain an
-unfamiliar neighbour — so every victim alerts alongside the attacker, and since
-mitigation blocks the host an alert names, the system would answer an intrusion
-by cutting off the machines that were broken into. This showed up in a real run
-before it was fixed: a port scan made the *server* alert, because its RST
-replies came from all 64 scanned ports. Betweenness and community membership
-stay undirected, because "does this host sit between two groups" has no
-direction to it.
+```sh
+python3 -m experiments.campaign create --campaign results/campaigns/my-submission
+make pilot CAMPAIGN=results/campaigns/my-submission
+make calibrate CAMPAIGN=results/campaigns/my-submission
+make evaluate CAMPAIGN=results/campaigns/my-submission
+```
 
-**The graph detector does not always say "lateral movement".** It detects that
-a host's communication structure changed sharply. When the new-neighbour ratio
-is what drove the score, that is lateral movement and it says so; when the score
-came from somewhere else — port diversity exploding against a host it always
-talks to — it reports a `graph_anomaly` instead, and the decision manager logs
-rather than blocks unless the score was extreme. Asserting a movement that was
-not observed would put a wrong word in front of an analyst.
+Use either the all-in-one command or staged creation, not both for the same
+folder. Successful trials are retained on resumption. Source changes require a
+new campaign; thresholds are frozen before evaluation.
 
-**Attack order matters in multi-attack runs.** The graph detector's profiles
-keep learning, so a loud attack run first trains away the signal for a quiet one
-that follows: a port scan folds a window of ~80 ports into the attacker's own
-baseline and adds every host it touched to its seen-neighbours set. C7 therefore
-runs lateral movement first, and the single-attack cases C2–C5 — each against a
-clean profile — remain the primary evidence.
+## Architecture
 
-## Two emulation details, for the same reason
+```mermaid
+flowchart LR
+    A[Six Mininet hosts] --> B[Two OpenFlow switches]
+    B --> C[Ryu collection and shared windows]
+    C --> D[Threshold baseline]
+    C --> E[Graph detector]
+    D --> F[Candidates and decisions]
+    E --> F
+    F --> G[Drop rules]
+    G --> B
+    A --> H[HTTP probes and receiver observations]
+    C --> I[Auditable experiment evidence]
+    F --> I
+    H --> I
+```
 
-**Microflow forwarding rules.** The learning switch installs 5-tuple rules, not
-MAC-pair rules. With MAC-pair rules, everything after a conversation's first
-packet — every new port a scanner touches, every login retry — would be
-forwarded without the controller ever seeing it, and port-scan and brute-force
-detection would be blind by construction. The cost is more PacketIn events and
-more flow-table entries, which is not hidden: it is exactly the controller
-overhead this project set out to measure.
+Detection comparisons disable mitigation. Separate runs permit exactly one
+detector to actuate. The graph uses directional initiation features plus
+undirected structural features and rolling host profiles. Community changes are
+compared by peer membership, not community labels.
 
-**Static ARP.** Every run pre-populates host ARP tables. Without it, Linux drops
-packets while ARP resolution is pending — scapy sends one packet and moves on,
-so most generated traffic never reached the wire. ARP also floods to every port,
-which would add an edge from every host to every other host if it were modelled.
+## Evidence and submission
 
-## Scope
+See [evaluation methodology](docs/evaluation.md) for metric definitions and
+[submission checklist](docs/submission.md) for curation and reproduction.
+Legacy runs under `results/raw/` are preserved and are not final submission
+claims. The completed campaign is
+`results/campaigns/submission-20260922-v2`; its curated evidence lives in
+`submission/`. See the [final results](docs/results.md) for measured coverage,
+false positives, containment, delivery, and limitations.
 
-Implemented: the report's minimum viable project and its main research
-contribution. Deliberately not implemented, per the report's own scoping: a
-scikit-learn ML baseline, Suricata signature integration, honeypot redirection,
-multi-controller scalability, and adversarial-evasion robustness.
+All 95 evaluation trials, three normal-only calibration trials, and the pilot
+passed validity checks. The primary comparison uses five trials per attack with
+mitigation disabled. Each cell shows **source identified / correct class**.
 
-`lantern/decision.py` takes alerts from any source, so adding a third detector
-later means emitting an `Alert` and nothing more.
+| Simulated workload | Threshold baseline | Graph detector |
+| --- | --- | --- |
+| Port scan | 5/5 / 5/5 | 5/5 / 0/5 |
+| DoS | 5/5 / 5/5 | 0/5 / 0/5 |
+| SYN retry | 5/5 / 5/5 | 0/5 / 0/5 |
+| Sequential contact | 5/5 / 0/5 | 5/5 / 5/5 |
+
+The graph correctly classified sequential contact, while the baseline also
+identified its source. Under legitimate peer-communication variation, false
+positives occurred in **30/273 eligible windows (11.0%)** for the baseline and
+**14/273 (5.1%)** for the graph. Five trials give wide uncertainty intervals;
+the [full write-up](docs/results.md) reports intervals, misses, and order effects.
+
+![Detection coverage with confidence intervals](submission/tables/coverage.png)
+
+Mitigation evidence is more limited: graph blocking was independently verified
+for 10/30 attack records; baseline blocking remained unverified. Both actuators
+preserved all measured innocent-client attack and recovery HTTP requests, but
+requests from the attack source suffered failures. See
+[containment](submission/tables/containment.csv) and
+[delivery](submission/tables/disruption.csv) for every trial.
+
+### Verify the included evidence
+
+```sh
+make build
+make validate
+make verify
+make package
+```
+
+`make verify` checks all evidence checksums and regenerates every published CSV
+for an exact comparison. `make package` creates
+`output/lantern-submission.tar.gz` and its SHA-256 sidecar from an explicit
+allowlist. It refuses to overwrite an existing archive. The archive includes
+source, documentation, and the curated evidence; `output/` is disposable.
+
+To reproduce from an extracted archive:
+
+```sh
+tar -xzf output/lantern-submission.tar.gz -C /path/to/empty-directory
+cd /path/to/empty-directory/lantern
+make build
+make validate
+make verify
+```
+
+### Curate a new campaign
+
+The included `submission/` already contains the selected campaign. For a new
+campaign, select a new destination to preserve the included evidence:
+
+```sh
+docker run --rm --network none -v "$PWD:/opt/lantern" --entrypoint python3 \
+  lantern-sdn-ids -m experiments.package curate \
+  --campaign results/campaigns/my-submission --submission submission-new
+```
+
+The [manifest](submission/manifest.json),
+[validity table](submission/tables/validity.csv),
+[result-to-evidence map](submission/tables/evidence_map.csv), and
+[checksums](submission/checksums.json) provide the audit trail. Detailed
+resource measurements are in [overhead.csv](submission/tables/overhead.csv).
+
+## Limits and troubleshooting
+
+- Traffic attacks are simulations: repeated SYNs do not authenticate, and
+  sequential contacts do not demonstrate successful compromise or propagation.
+- The baseline is this implementation's source/pair threshold detector; results
+  do not represent every per-flow method.
+- Live scheduling remains variable even with seeds. Five trials are a small
+  sample. Multi-attack observations within a run are dependent.
+- Flow-table entries are a software occupancy proxy, not measured hardware TCAM.
+- Receiver silence alone does not establish blocking. The analysis also requires
+  ongoing sends, matching positive drop counters, and correlated switch replies.
+- Source-wide idle-timeout rules can remain active while the host continues
+  legitimate traffic. Recovery is measured, not assumed.
+- ML, Suricata, redirection, production deployment, and multi-controller scaling
+  are outside the submitted implementation.
+
+If service delivery fails, inspect the run validity and process logs before
+interpreting any detection result. If the datapath gate fails, use a Linux host
+or a Linux VM with functioning userspace OVS. Do not run concurrent campaigns on
+the same machine when measuring overhead.

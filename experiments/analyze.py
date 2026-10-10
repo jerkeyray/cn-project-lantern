@@ -1,629 +1,676 @@
-"""Turn raw run logs into the tables and figures the Review-2 report needs.
-
-Nothing is aggregated inside the controller; every number here is derived from
-the JSONL event logs and the ground-truth markers the attack scripts wrote. That
-separation means a metric can be redefined and recomputed without re-running a
-single experiment, and it keeps measurement off the detection path.
-
-Two scoring conventions are reported side by side, and the difference between
-them matters:
-
-* **class-agnostic** -- did the detector flag the attacking host while the
-  attack was running? This is the fair cross-detector comparison. The graph
-  detector only ever emits "lateral movement"; it makes no claim to name which
-  attack it is looking at, so scoring it on class accuracy would penalise it
-  for something it never claimed to do.
-* **class-exact** -- did it also get the attack class right? The per-flow
-  baseline does claim this, so it is reported too.
-
-The headline coverage table uses class-agnostic scoring. Reporting only the
-convention that flatters the proposed method would not be a comparison.
-"""
+"""Derive evaluation tables from immutable logs; never mix experimental phases."""
 
 import argparse
-import csv
-import glob
-import json
-import os
-import statistics
-import sys
 from collections import defaultdict
+import csv
+import json
+import math
+from pathlib import Path
+import statistics
+from experiments.validation import read_events
+from lantern import config
 
-sys.path.insert(0, "/opt/lantern")
+DETECTORS = ("baseline", "graph")
 
-from lantern import config  # noqa: E402
-from lantern.alerts import DETECTOR_BASELINE, DETECTOR_GRAPH  # noqa: E402
-
-DETECTORS = (DETECTOR_BASELINE, DETECTOR_GRAPH)
-
-# An alert is credited to an attack if it names the attacking host and lands
-# inside the attack's interval, extended by this grace period. The grace exists
-# because a detector scores at window boundaries: an attack ending mid-window
-# is legitimately reported when that window closes, up to one window later.
-DETECTION_GRACE_SECONDS = config.WINDOW_SECONDS * 1.5
-
-
-# ----------------------------------------------------------------------
-# Loading
-# ----------------------------------------------------------------------
 
 def load_events(path):
-    events = []
-    with open(path) as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except ValueError:
-                continue
-    return events
-
-
-def load_truth(path):
-    if not os.path.exists(path):
-        return []
-    return load_events(path)
+    return read_events(path)
 
 
 def discover_runs(directory):
-    """Find every (case, trial, log path, truth path) triple on disk."""
     runs = []
-    for log_path in sorted(glob.glob(os.path.join(directory, "*_trial*.jsonl"))):
-        base = os.path.basename(log_path)
-        if base.endswith("_truth.jsonl"):
+    for path in sorted(Path(directory).rglob("*_trial*.jsonl")):
+        tail = path.stem.split("_trial")[-1]
+        if not tail.isdigit():
             continue
-        stem = base[: -len(".jsonl")]
-        case, _, trial_part = stem.partition("_trial")
-        try:
-            trial = int(trial_part)
-        except ValueError:
-            continue
+        case = path.stem.split("_trial")[0]
         runs.append(
-            {
-                "case": case,
-                "trial": trial,
-                "log": log_path,
-                "truth": os.path.join(directory, "%s_truth.jsonl" % stem),
-            }
+            dict(
+                case=case,
+                run_id=str(path.relative_to(directory).with_suffix("")),
+                trial=int(tail),
+                log=str(path),
+                truth=str(path.with_name(path.stem + "_truth.jsonl")),
+            )
         )
     return runs
 
 
-# ----------------------------------------------------------------------
-# Scoring one run
-# ----------------------------------------------------------------------
-
-def effective_windows(truths):
-    """Give each attack a matching window that cannot swallow the next attack.
-
-    An attack's window is its own interval plus a grace period, because a
-    detector scores at window boundaries and an attack ending mid-window is
-    legitimately reported when that window closes.
-
-    But every attack in a run comes from the same compromised host, so the
-    source address cannot tell two of them apart. Left uncapped, the grace
-    period lets an alert for a *later* attack fall inside an *earlier* one's
-    window and be credited to it. That is not a hypothetical: it credited the
-    per-flow baseline with catching lateral movement in C6 and C7, at a
-    mean-time-to-detect of 26-36 seconds -- well after the ~22-second lateral
-    attack had finished. The "detections" were its port-scan alerts for the
-    attack that ran next.
-
-    So the grace period is truncated at the start of the following attack from
-    the same host.
-    """
-    windows = []
-    by_source = defaultdict(list)
-    for truth in truths:
-        if truth.get("t_start") is not None and truth.get("t_end") is not None:
-            by_source[truth.get("src")].append(truth)
-
-    for source, items in by_source.items():
-        items.sort(key=lambda t: t["t_start"])
-        for index, truth in enumerate(items):
-            end = truth["t_end"] + DETECTION_GRACE_SECONDS
-            if index + 1 < len(items):
-                end = min(end, items[index + 1]["t_start"])
-            windows.append((truth, truth["t_start"], end))
-    return windows
+def wilson(hits, total):
+    if not total:
+        return None, None
+    z = 1.959963984540054
+    p = hits / total
+    center = (p + z * z / (2 * total)) / (1 + z * z / total)
+    half = (
+        z
+        * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total))
+        / (1 + z * z / total)
+    )
+    return max(0, center - half), min(1, center + half)
 
 
-def match_alert(alert, truths, class_exact):
-    """Return the attack this alert detected, or None if it is a false positive.
+def stats(values):
+    values = [v for v in values if v is not None]
+    return dict(
+        n=len(values),
+        mean=statistics.mean(values) if values else None,
+        median=statistics.median(values) if values else None,
+        minimum=min(values) if values else None,
+        maximum=max(values) if values else None,
+    )
 
-    When more than one attack could claim the alert, an exact class match wins;
-    failing that, the most recently started attack does.
-    """
-    when = alert.get("wall", 0)
-    candidates = [
-        truth
-        for truth, start, end in effective_windows(truths)
-        if alert.get("src_ip") == truth.get("src") and start <= when <= end
+
+def attack_interval(truth):
+    return (
+        truth.get("first_send") or truth["t_start"],
+        truth.get("last_send") or truth["t_end"],
+    )
+
+
+def matching_truths(alert, truths):
+    """Source and observed-window overlap; ambiguity is retained, never guessed."""
+    src = alert.get("src_ip")
+    start, end = alert.get("window_start_wall"), alert.get("window_end_wall")
+    if start is None or end is None:
+        # Legacy events cannot provide window attribution. Retain old timestamp
+        # matching for exploratory evidence only and label the schema legacy.
+        wall = alert.get("wall", 0)
+        return [
+            t
+            for t in truths
+            if t.get("src") == src
+            and t["t_start"] <= wall <= t["t_end"] + config.WINDOW_SECONDS
+        ]
+    return [
+        t
+        for t in truths
+        if t.get("src") == src
+        and start <= attack_interval(t)[1]
+        and end > attack_interval(t)[0]
     ]
-    if not candidates:
-        return None
 
-    exact = [c for c in candidates if c.get("attack_class") == alert.get("attack_class")]
-    if exact:
-        return max(exact, key=lambda t: t["t_start"])
-    if class_exact:
+
+def match_alert(alert, truths, class_exact=False):
+    matches = matching_truths(alert, truths)
+    if len(matches) != 1:
         return None
-    return max(candidates, key=lambda t: t["t_start"])
+    match = matches[0]
+    return (
+        match
+        if not class_exact or match["attack_class"] == alert["attack_class"]
+        else None
+    )
+
+
+def decision_timings(events):
+    targeted = {
+        e["decision_id"]: e for e in events if e["kind"] == "mitigation_targeted"
+    }
+    barriers = defaultdict(dict)
+    for e in events:
+        if e["kind"] == "barrier_reply" and e.get("decision_id"):
+            barriers[e["decision_id"]][e["dpid"]] = e
+    rows = []
+    for e in events:
+        if e["kind"] != "mitigation_decided":
+            continue
+        key = e.get("decision_id")
+        required = targeted.get(key, {}).get("switches", [])
+        replies = barriers.get(key, {})
+        complete = bool(required) and all(s in replies for s in required)
+        confirmed = (
+            max((replies[s]["mono"] for s in required), default=None)
+            if complete
+            else None
+        )
+        confirmed_wall = (
+            max((replies[s]["wall"] for s in required), default=None)
+            if complete
+            else None
+        )
+        rows.append(
+            dict(
+                decision_id=key,
+                alert_id=e.get("alert_id"),
+                detector=e["detector"],
+                action=e["action"],
+                actuate=e["actuate"],
+                src=e.get("src_ip"),
+                alert_to_decision=(
+                    (e["decided_mono"] - e["created_mono"])
+                    if "decided_mono" in e and "created_mono" in e
+                    else None
+                ),
+                decision_to_confirmation=(
+                    (confirmed - e["decided_mono"]) if confirmed is not None else None
+                ),
+                all_switches_confirmed=complete,
+                confirmation_wall=confirmed_wall,
+                confirmed_switches=len(replies),
+                required_switches=len(required),
+            )
+        )
+    return rows
 
 
 def score_run(run):
-    """Score one run into per-detector detection, timing and overhead figures."""
-    events = load_events(run["log"])
-    truths = load_truth(run["truth"])
-
-    alerts = [e for e in events if e["kind"] == "alert"]
-    decisions = [e for e in events if e["kind"] == "mitigation_decided"]
-    flowmods = [e for e in events if e["kind"] == "flowmod_sent"]
-    barriers = [e for e in events if e["kind"] == "barrier_reply"]
-    timings = [e for e in events if e["kind"] == "detector_timing"]
-    samples = [e for e in events if e["kind"] == "resource_sample"]
-    run_start = next((e for e in events if e["kind"] == "run_start"), {})
-    run_end = next((e for e in events if e["kind"] == "run_end"), {})
-
-    result = {
-        "case": run["case"],
-        "trial": run["trial"],
-        "mitigator": run_start.get("mitigator", "?"),
-        "attacks": len(truths),
-        "detectors": {},
-        "attack_details": [],
-        "timing": {},
-        "overhead": {},
-    }
-
-    # -- detection ----------------------------------------------------
-    for detector in DETECTORS:
-        detector_alerts = [a for a in alerts if a.get("detector") == detector]
-
-        agnostic_hits, exact_hits, false_positives = {}, {}, []
-        matched_alerts = 0
-        for alert in detector_alerts:
-            matched = match_alert(alert, truths, class_exact=False)
-            if matched is None:
-                false_positives.append(alert)
-                continue
-            matched_alerts += 1
-            key = (matched["attack_class"], matched["t_start"])
-            agnostic_hits.setdefault(key, alert)
-            if alert.get("attack_class") == matched["attack_class"]:
-                exact_hits.setdefault(key, alert)
-
-        # Coverage counts distinct *attacks* caught; precision counts correct
-        # *alerts*. Dividing attacks-caught by alerts-raised would mix the two
-        # and punish a detector for reporting one attack twice, which the alert
-        # cooldown already limits.
-        detected = len(agnostic_hits)
-        result["detectors"][detector] = {
-            "alerts": len(detector_alerts),
-            "true_positives": detected,
-            "matched_alerts": matched_alerts,
-            "false_positives": len(false_positives),
-            "class_exact_detections": len(exact_hits),
-            "attacks": len(truths),
-            "detection_rate": detected / len(truths) if truths else None,
-            "precision": (
-                matched_alerts / len(detector_alerts) if detector_alerts else None
-            ),
+    path = Path(run["log"])
+    events = read_events(path)
+    truth_path = Path(run["truth"])
+    truths = read_events(truth_path) if truth_path.exists() else []
+    meta_path = path.with_suffix(".meta.json")
+    validity_path = path.with_suffix(".validity.json")
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    validity = (
+        json.loads(validity_path.read_text())
+        if validity_path.exists()
+        else {
+            "valid": True,
+            "reasons": ["legacy: integrity not independently validated"],
         }
-
-    # -- per attack: which detector saw it, and how fast ---------------
-    for truth in truths:
-        detail = {
-            "case": run["case"],
-            "trial": run["trial"],
-            "attack_class": truth.get("attack_class"),
-            "src": truth.get("src"),
-            "duration": round(truth.get("t_end", 0) - truth.get("t_start", 0), 2),
-        }
+    )
+    start = next((e for e in events if e["kind"] == "run_start"), {})
+    legacy = start.get("schema_version", 1) < 2
+    if not legacy and not validity_path.exists():
+        validity = {"valid": False, "reasons": ["missing validity report"]}
+    phase = meta.get(
+        "phase", "detection" if start.get("mitigator") == "none" else "mitigation"
+    )
+    identity = dict(
+        case=meta.get("case", run["case"]),
+        trial=run["trial"],
+        phase=phase,
+        mitigator=start.get("mitigator", "unknown"),
+        run=run.get("run_id", path.stem),
+    )
+    candidates = [
+        e for e in events if e["kind"] == ("alert" if legacy else "detector_candidate")
+    ]
+    timings = [
+        e
+        for e in events
+        if e["kind"] == "detector_timing"
+        and not e.get("warming_up")
+        and e.get("complete_window", True)
+        and (not meta or e["wall"] >= meta.get("evaluation_start", float("inf")))
+    ]
+    eligible_indices = {e["window_index"] for e in timings if "window_index" in e}
+    if not legacy:
+        candidates = [
+            e
+            for e in candidates
+            if not e.get("warming_up") and e["window_index"] in eligible_indices
+        ]
+    attacks = []
+    for index, truth in enumerate(truths):
+        row = dict(
+            identity,
+            attack_id=truth.get("attack_id", str(index)),
+            attack_class=truth["attack_class"],
+            src=truth["src"],
+        )
         for detector in DETECTORS:
-            first = None
-            for alert in sorted(
-                (a for a in alerts if a.get("detector") == detector),
-                key=lambda a: a.get("wall", 0),
-            ):
-                # Matched against *every* attack in the run, then checked to
-                # see whether this one won. Passing a single attack here would
-                # hide its neighbours from the matcher, and the grace period
-                # would once again reach across into the next attack -- which
-                # is exactly the miscrediting effective_windows() exists to
-                # prevent.
-                if match_alert(alert, truths, class_exact=False) is truth:
-                    first = alert
-                    break
-            detail["%s_detected" % detector] = first is not None
-            detail["%s_mttd" % detector] = (
-                round(first["wall"] - truth["t_start"], 3) if first else None
+            hits = [
+                a
+                for a in candidates
+                if a["detector"] == detector and match_alert(a, truths) is truth
+            ]
+            first = (
+                min(hits, key=lambda a: a.get("created_wall", a["wall"]))
+                if hits
+                else None
             )
-            detail["%s_score" % detector] = round(first["score"], 3) if first else None
-        result["attack_details"].append(detail)
-
-    # -- timing -------------------------------------------------------
-    # Decision latency is small by construction (the decision is taken
-    # synchronously with the alert), so it is reported but is not the
-    # interesting number. Rule-installation latency -- FlowMod sent to switch
-    # barrier confirmation -- is the one that answers Research Gap 4.
-    decision_latencies = [
-        d["t"] - d["alert_ts"] for d in decisions if d.get("alert_ts") is not None
-    ]
-    install_latencies = [
-        b["install_latency"] for b in barriers if b.get("install_latency") is not None
-    ]
-
+            row[detector + "_detected"] = bool(hits)
+            row[detector + "_class_exact"] = any(
+                a["attack_class"] == truth["attack_class"] for a in hits
+            )
+            row[detector + "_mttd"] = (
+                max(
+                    0,
+                    first.get("created_wall", first["wall"])
+                    - attack_interval(truth)[0],
+                )
+                if first
+                else None
+            )
+        attacks.append(row)
+    detections = []
+    for detector in DETECTORS:
+        alerts = [a for a in candidates if a["detector"] == detector]
+        matched = sum(len(matching_truths(a, truths)) == 1 for a in alerts)
+        ambiguous = sum(len(matching_truths(a, truths)) > 1 for a in alerts)
+        benign = set()
+        if not legacy:
+            for w in timings:
+                for host in w.get("eligible_hosts", []):
+                    event = dict(
+                        src_ip=host,
+                        window_start_wall=w["window_start_wall"],
+                        window_end_wall=w["window_end_wall"],
+                    )
+                    if not matching_truths(event, truths):
+                        benign.add((host, w["window_index"]))
+        fp = {
+            (a["src_ip"], a["window_index"])
+            for a in alerts
+            if (a["src_ip"], a["window_index"]) in benign
+        }
+        detections.append(
+            dict(
+                identity,
+                detector=detector,
+                attacks=len(truths),
+                detected=sum(a[detector + "_detected"] for a in attacks),
+                class_exact=sum(a[detector + "_class_exact"] for a in attacks),
+                candidate_alerts=len(alerts),
+                matched_candidates=matched,
+                ambiguous_candidates=ambiguous,
+                unmatched_candidates=len(alerts) - matched - ambiguous,
+                candidate_precision=(
+                    matched / (len(alerts) - ambiguous)
+                    if len(alerts) > ambiguous
+                    else None
+                ),
+                operational_alerts=sum(
+                    e["kind"] == "alert" and e.get("detector") == detector
+                    for e in events
+                ),
+                benign_host_windows=len(benign) if not legacy else None,
+                false_positive_host_windows=len(fp) if not legacy else None,
+                false_positive_rate=len(fp) / len(benign) if benign else None,
+            )
+        )
+    probes = []
+    for probe_path in path.parent.glob(path.stem + "_probe_*.jsonl"):
+        probes += read_events(probe_path)
+    disruption = []
+    for group in ["innocent", "compromised"]:
+        for period in [
+            "pre_attack",
+            "attack",
+            "between_attacks",
+            "observation",
+            "recovery",
+        ]:
+            selected = []
+            for p in probes:
+                g = (
+                    "compromised"
+                    if p["src"] == config.HOST_TO_IP[config.ATTACKER]
+                    else "innocent"
+                )
+                active = any(
+                    attack_interval(t)[0] <= p["wall"] <= attack_interval(t)[1]
+                    for t in truths
+                )
+                first_attack = min(
+                    (attack_interval(t)[0] for t in truths),
+                    default=meta.get("evaluation_start", 0),
+                )
+                if active:
+                    per = "attack"
+                elif p["wall"] >= meta.get("recovery_start", float("inf")):
+                    per = "recovery"
+                elif p["wall"] < first_attack:
+                    per = "pre_attack"
+                else:
+                    per = "between_attacks" if truths else "observation"
+                # Restrict pre-attack to final 30 seconds before evaluation.
+                if p["wall"] < meta.get("evaluation_start", 0) - 30:
+                    continue
+                if g == group and per == period:
+                    selected.append(p)
+            successes = sum(p["success"] for p in selected)
+            disruption.append(
+                dict(
+                    identity,
+                    group=group,
+                    period=period,
+                    attempts=len(selected),
+                    successes=successes,
+                    failure_rate=1 - successes / len(selected) if selected else None,
+                    mean_success_latency=stats(
+                        [p["latency"] for p in selected if p["success"]]
+                    )["mean"],
+                )
+            )
+    timing_rows = [dict(identity, **r) for r in decision_timings(events)]
+    receivers = []
+    for receiver_path in path.parent.glob(path.stem + "_receiver_*.jsonl"):
+        receivers += read_events(receiver_path)
     containment = []
     for truth in truths:
+        matching_alert_ids = {
+            a.get("alert_id") for a in candidates if match_alert(a, truths) is truth
+        }
         confirmations = [
-            b["wall"] for b in barriers
-            if b.get("wall", 0) >= truth.get("t_start", 0)
+            r
+            for r in timing_rows
+            if r["alert_id"] in matching_alert_ids and r["all_switches_confirmed"]
         ]
-        if confirmations:
-            containment.append(min(confirmations) - truth["t_start"])
+        confirm = min((r["confirmation_wall"] for r in confirmations), default=None)
+        # Require >=3s of ongoing malicious sends after confirmation, receiver
+        # silence over >=2 samples, and a positive matching rule drop count.
+        verified = False
+        if confirm and attack_interval(truth)[1] - confirm >= 3:
+            cookies = {
+                e["cookie"]
+                for e in events
+                if e["kind"] == "flowmod_sent"
+                and e.get("alert_id") in matching_alert_ids
+            }
+            samples = [
+                e
+                for e in events
+                if e["kind"] == "resource_sample"
+                and confirm <= e["wall"] <= attack_interval(truth)[1]
+            ]
+            dropped = any(
+                d["cookie"] in cookies and d["packets"] > 0
+                for e in samples
+                for table in e.get("flow_tables", {}).values()
+                for d in table.get("drops", [])
+            )
+            quiet = True
+            for target in truth.get("targets", []):
+                observations = sorted(
+                    [
+                        e
+                        for e in receivers
+                        if e["dst"] == target
+                        and confirm + 1 <= e["wall"] <= attack_interval(truth)[1]
+                    ],
+                    key=lambda e: e["wall"],
+                )
+                if len(observations) < 2 or observations[-1]["counts"].get(
+                    truth["src"], 0
+                ) != observations[0]["counts"].get(truth["src"], 0):
+                    quiet = False
+            verified = dropped and quiet
+        containment.append(
+            dict(
+                identity,
+                attack_id=truth.get("attack_id"),
+                attack_class=truth["attack_class"],
+                rule_confirmation_delay=(
+                    confirm - attack_interval(truth)[0] if confirm else None
+                ),
+                observed_blocking="verified" if verified else "unverified",
+            )
+        )
+    resources = [e for e in events if e["kind"] == "resource_sample"]
+    overhead = []
+    for period in ["warmup", "evaluation"]:
+        selected = [
+            e
+            for e in resources
+            if (e["wall"] < meta.get("evaluation_start", 0)) == (period == "warmup")
+        ]
+        ts = [
+            e
+            for e in events
+            if e["kind"] == "detector_timing"
+            and bool(e.get("warming_up")) == (period == "warmup")
+        ]
+        row = dict(identity, period=period)
+        for key in [
+            "cpu_percent",
+            "rss_bytes",
+            "packet_in_count",
+            "flow_stats_requests",
+            "flow_stats_replies",
+        ]:
+            for metric, value in stats([e.get(key) for e in selected]).items():
+                row[key + "_" + metric] = value
+        for key in [
+            "baseline_seconds",
+            "graph_total_seconds",
+            "graph_build_seconds",
+            "betweenness_seconds",
+        ]:
+            for metric, value in stats([e.get(key) for e in ts]).items():
+                row[key + "_" + metric] = value
+        for key in ["total", "forwarding", "mitigation"]:
+            row["peak_" + key + "_entries"] = max(
+                [
+                    sum(t[key] for t in e.get("flow_tables", {}).values())
+                    for e in selected
+                ]
+                or [0]
+            )
+        baseline_mean = row.get("baseline_seconds_mean")
+        graph_mean = row.get("graph_total_seconds_mean")
+        row["graph_cost_ratio"] = graph_mean / baseline_mean if baseline_mean else None
+        overhead.append(row)
+    return dict(
+        identity=identity,
+        validity=validity,
+        legacy=legacy,
+        attacks=attacks,
+        detections=detections,
+        disruption=disruption,
+        timing=timing_rows,
+        containment=containment,
+        overhead=overhead,
+        installation=[
+            dict(
+                identity,
+                dpid=e["dpid"],
+                cookie=e["cookie"],
+                flowmod_to_confirmation=e.get("install_latency"),
+            )
+            for e in events
+            if e["kind"] == "barrier_reply"
+        ],
+    )
 
-    result["timing"] = {
-        "mean_decision_latency": mean_or_none(decision_latencies),
-        "mean_install_latency": mean_or_none(install_latencies),
-        "max_install_latency": max(install_latencies) if install_latencies else None,
-        "rules_installed": len(flowmods),
-        "rules_confirmed": len(install_latencies),
-        # First malicious packet to a rule confirmed on a switch: the number
-        # that actually describes how long the attacker had.
-        "mean_time_to_containment": mean_or_none(containment),
-    }
 
-    # -- overhead -----------------------------------------------------
-    scoring_timings = [t for t in timings if not t.get("warming_up")]
-    cpu = [s["cpu_percent"] for s in samples if s.get("cpu_percent") is not None]
-    rss = [s["rss_bytes"] for s in samples if s.get("rss_bytes") is not None]
-
-    baseline_times = [t["baseline_seconds"] for t in timings if "baseline_seconds" in t]
-    graph_times = [t["graph_total_seconds"] for t in timings if "graph_total_seconds" in t]
-    betweenness_times = [
-        t["betweenness_seconds"] for t in timings if "betweenness_seconds" in t
-    ]
-
-    result["overhead"] = {
-        "windows_scored": len(scoring_timings),
-        "mean_baseline_seconds": mean_or_none(baseline_times),
-        "mean_graph_seconds": mean_or_none(graph_times),
-        "max_graph_seconds": max(graph_times) if graph_times else None,
-        "mean_betweenness_seconds": mean_or_none(betweenness_times),
-        "graph_cost_ratio": (
-            (statistics.mean(graph_times) / statistics.mean(baseline_times))
-            if baseline_times and graph_times and statistics.mean(baseline_times) > 0
-            else None
-        ),
-        "mean_cpu_percent": mean_or_none(cpu),
-        "max_cpu_percent": max(cpu) if cpu else None,
-        "mean_rss_mb": (statistics.mean(rss) / 1e6) if rss else None,
-        "packet_in_count": run_end.get("packet_in_count"),
-        "records_ingested": run_end.get("records_ingested"),
-        "records_from_packet_in": run_end.get("records_from_packet_in"),
-        "records_from_flow_stats": run_end.get("records_from_flow_stats"),
-        "records_rejected_late": run_end.get("records_rejected_late"),
-        "mitigation_rules": run_end.get("rules_installed"),
-    }
-
-    # -- disruption ---------------------------------------------------
-    attack_sources = {t.get("src") for t in truths}
-    blocked_sources = {d.get("src_ip") for d in decisions if d.get("actuate")}
-    innocent_blocked = sorted(blocked_sources - attack_sources)
-    result["disruption"] = {
-        "blocked_sources": len(blocked_sources),
-        "innocent_hosts_blocked": len(innocent_blocked),
-        "innocent_hosts": ",".join(innocent_blocked),
-    }
-
-    return result
-
-
-def mean_or_none(values):
-    return statistics.mean(values) if values else None
-
-
-# ----------------------------------------------------------------------
-# Tables
-# ----------------------------------------------------------------------
-
-def write_csv(path, rows, fieldnames=None):
-    if not rows:
-        return None
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fieldnames = fieldnames or list(rows[0].keys())
-    with open(path, "w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+def write_csv(path, rows):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    keys = list(dict.fromkeys(k for row in rows for k in row))
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=keys)
         writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-    return path
+        writer.writerows(rows)
 
 
-def round_row(row, places=4):
-    out = {}
-    for key, value in row.items():
-        if isinstance(value, float):
-            out[key] = round(value, places)
-        else:
-            out[key] = value
-    return out
-
-
-def build_tables(results, tables_dir):
-    written = []
-
-    # 1. Per-run detection summary.
-    detection_rows = []
-    for result in results:
-        for detector, figures in result["detectors"].items():
-            detection_rows.append(
-                round_row(
-                    {
-                        "case": result["case"],
-                        "trial": result["trial"],
-                        "mitigator": result["mitigator"],
-                        "detector": detector,
-                        "attacks": figures["attacks"],
-                        "alerts": figures["alerts"],
-                        "true_positives": figures["true_positives"],
-                        "matched_alerts": figures["matched_alerts"],
-                        "false_positives": figures["false_positives"],
-                        "class_exact": figures["class_exact_detections"],
-                        "detection_rate": figures["detection_rate"],
-                        "precision": figures["precision"],
-                    }
-                )
-            )
-    written.append(write_csv(os.path.join(tables_dir, "detection_by_run.csv"),
-                             detection_rows))
-
-    # 2. THE headline table: per attack class, did each detector see it?
-    by_class = defaultdict(lambda: defaultdict(list))
-    mttd = defaultdict(lambda: defaultdict(list))
-    for result in results:
-        for detail in result["attack_details"]:
-            attack_class = detail["attack_class"]
-            for detector in DETECTORS:
-                by_class[attack_class][detector].append(
-                    1 if detail["%s_detected" % detector] else 0
-                )
-                value = detail["%s_mttd" % detector]
-                if value is not None:
-                    mttd[attack_class][detector].append(value)
-
-    coverage_rows = []
-    for attack_class in sorted(by_class):
-        row = {"attack_class": attack_class,
-               "attack_instances": len(by_class[attack_class][DETECTOR_BASELINE])}
-        for detector in DETECTORS:
-            hits = by_class[attack_class][detector]
-            row["%s_coverage" % detector] = (
-                sum(hits) / len(hits) if hits else None
-            )
-            row["%s_mttd_mean" % detector] = mean_or_none(mttd[attack_class][detector])
-        coverage_rows.append(round_row(row))
-    written.append(write_csv(os.path.join(tables_dir, "coverage_by_class.csv"),
-                             coverage_rows))
-
-    # 3. Per-attack detail, so a single odd trial can be found rather than
-    #    hidden inside a mean.
-    detail_rows = [round_row(d) for r in results for d in r["attack_details"]]
-    written.append(write_csv(os.path.join(tables_dir, "attacks_detail.csv"),
-                             detail_rows))
-
-    # 4. Timing.
-    timing_rows = [
-        round_row(dict(case=r["case"], trial=r["trial"], mitigator=r["mitigator"],
-                       **r["timing"]))
-        for r in results
-    ]
-    written.append(write_csv(os.path.join(tables_dir, "timing.csv"), timing_rows))
-
-    # 5. Overhead -- the cost side of the comparison.
-    overhead_rows = [
-        round_row(dict(case=r["case"], trial=r["trial"], **r["overhead"]))
-        for r in results
-    ]
-    written.append(write_csv(os.path.join(tables_dir, "overhead.csv"), overhead_rows))
-
-    # 6. False positives on normal-only traffic (C1).
-    fp_rows = []
-    for result in results:
-        if result["attacks"]:
+def coverage_rows(results):
+    groups = defaultdict(list)
+    for r in results:
+        if not r["validity"]["valid"] or r["identity"]["mitigator"] != "none":
             continue
-        for detector, figures in result["detectors"].items():
-            fp_rows.append(
+        phase = r["identity"]["phase"]
+        if phase not in ("detection", "order"):
+            continue
+        for attack in r["attacks"]:
+            cohort = (
+                "primary" if attack["case"] in ("C2", "C3", "C4", "C5") else "mixed"
+            )
+            groups[(phase, cohort, attack["attack_class"])].append(attack)
+            if phase == "detection":
+                groups[(phase, "pooled", attack["attack_class"])].append(attack)
+    rows = []
+    for (phase, cohort, attack_class), attacks in sorted(groups.items()):
+        for detector in DETECTORS:
+            hits = sum(a[detector + "_detected"] for a in attacks)
+            low, high = wilson(hits, len(attacks))
+            row = dict(
+                phase=phase,
+                cohort=cohort,
+                attack_class=attack_class,
+                detector=detector,
+                detected=hits,
+                instances=len(attacks),
+                coverage=hits / len(attacks),
+                wilson_low=low,
+                wilson_high=high,
+                class_exact=sum(a[detector + "_class_exact"] for a in attacks),
+            )
+            row.update(
                 {
-                    "case": result["case"],
-                    "trial": result["trial"],
-                    "detector": detector,
-                    "false_positive_alerts": figures["false_positives"],
+                    "mttd_" + k: v
+                    for k, v in stats([a[detector + "_mttd"] for a in attacks]).items()
                 }
             )
-    if fp_rows:
-        written.append(write_csv(os.path.join(tables_dir, "false_positives.csv"),
-                                 fp_rows))
+            rows.append(row)
+    return rows
 
-    # 7. Disruption.
-    disruption_rows = [
-        dict(case=r["case"], trial=r["trial"], mitigator=r["mitigator"],
-             **r["disruption"])
-        for r in results
+
+def analyze(raw, output):
+    results = [score_run(r) for r in discover_runs(raw)]
+    output = Path(output)
+    write_csv(
+        output / "validity.csv",
+        [
+            dict(
+                r["identity"],
+                valid=r["validity"]["valid"],
+                legacy=r["legacy"],
+                reasons="; ".join(r["validity"]["reasons"]),
+            )
+            for r in results
+        ],
+    )
+    valid = [r for r in results if r["validity"]["valid"]]
+    for key in [
+        "attacks",
+        "detections",
+        "disruption",
+        "timing",
+        "installation",
+        "containment",
+        "overhead",
+    ]:
+        write_csv(output / (key + ".csv"), [row for r in valid for row in r[key]])
+    coverage = coverage_rows(valid)
+    write_csv(output / "coverage.csv", coverage)
+    evidence = [
+        dict(
+            result_table="coverage.csv",
+            phase=row["phase"],
+            cohort=row["cohort"],
+            attack_class=row["attack_class"],
+            detector=row["detector"],
+            runs=";".join(
+                sorted(
+                    {
+                        a["run"]
+                        for r in valid
+                        for a in r["attacks"]
+                        if a["phase"] == row["phase"]
+                        and a["mitigator"] == "none"
+                        and a["attack_class"] == row["attack_class"]
+                        and (
+                            row["cohort"] == "pooled"
+                            or (a["case"] in ("C2", "C3", "C4", "C5"))
+                            == (row["cohort"] == "primary")
+                        )
+                    }
+                )
+            ),
+        )
+        for row in coverage
     ]
-    written.append(write_csv(os.path.join(tables_dir, "disruption.csv"),
-                             disruption_rows))
-
-    return [path for path in written if path]
-
-
-# ----------------------------------------------------------------------
-# Figures
-# ----------------------------------------------------------------------
-
-def build_figures(results, figs_dir):
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except Exception as error:
-        print("figures skipped (matplotlib unavailable: %s)" % error)
-        return []
-
-    os.makedirs(figs_dir, exist_ok=True)
-    written = []
-
-    # Figure 1: coverage per attack class, baseline vs graph.
-    by_class = defaultdict(lambda: defaultdict(list))
-    for result in results:
-        for detail in result["attack_details"]:
-            for detector in DETECTORS:
-                by_class[detail["attack_class"]][detector].append(
-                    1 if detail["%s_detected" % detector] else 0
-                )
-
-    if by_class:
-        classes = sorted(by_class)
-        baseline = [
-            100 * sum(by_class[c][DETECTOR_BASELINE]) / len(by_class[c][DETECTOR_BASELINE])
-            for c in classes
-        ]
-        graph = [
-            100 * sum(by_class[c][DETECTOR_GRAPH]) / len(by_class[c][DETECTOR_GRAPH])
-            for c in classes
-        ]
-        positions = range(len(classes))
-        width = 0.38
-
-        figure, axis = plt.subplots(figsize=(7.5, 4.2))
-        axis.bar([p - width / 2 for p in positions], baseline, width,
-                 label="per-flow baseline", color="#4C72B0")
-        axis.bar([p + width / 2 for p in positions], graph, width,
-                 label="graph-based", color="#DD8452")
-        axis.set_xticks(list(positions))
-        axis.set_xticklabels(classes)
-        axis.set_ylabel("detection coverage (%)")
-        axis.set_ylim(0, 105)
-        axis.set_title("Detection coverage by attack class (class-agnostic)")
-        axis.legend()
-        axis.grid(axis="y", alpha=0.3)
-        figure.tight_layout()
-        path = os.path.join(figs_dir, "coverage_by_class.png")
-        figure.savefig(path, dpi=150)
-        plt.close(figure)
-        written.append(path)
-
-    # Figure 2: what the graph detector costs per window, against the baseline.
-    baseline_times, graph_times = [], []
-    for result in results:
-        if result["overhead"]["mean_baseline_seconds"] is not None:
-            baseline_times.append(result["overhead"]["mean_baseline_seconds"] * 1000)
-        if result["overhead"]["mean_graph_seconds"] is not None:
-            graph_times.append(result["overhead"]["mean_graph_seconds"] * 1000)
-
-    if baseline_times and graph_times:
-        figure, axis = plt.subplots(figsize=(6.5, 4.2))
-        axis.boxplot([baseline_times, graph_times],
-                     labels=["per-flow baseline", "graph-based"])
-        axis.set_ylabel("detector compute time per window (ms)")
-        axis.set_yscale("log")
-        axis.set_title("Per-window detection cost (log scale)")
-        axis.grid(axis="y", alpha=0.3)
-        figure.tight_layout()
-        path = os.path.join(figs_dir, "detector_cost.png")
-        figure.savefig(path, dpi=150)
-        plt.close(figure)
-        written.append(path)
-
-    return written
-
-
-# ----------------------------------------------------------------------
-
-def print_summary(results):
-    print("\n" + "=" * 78)
-    print("SUMMARY")
-    print("=" * 78)
-
-    by_class = defaultdict(lambda: defaultdict(list))
-    for result in results:
-        for detail in result["attack_details"]:
-            for detector in DETECTORS:
-                by_class[detail["attack_class"]][detector].append(
-                    1 if detail["%s_detected" % detector] else 0
-                )
-
-    if by_class:
-        print("\nDetection coverage by attack class (class-agnostic):")
-        print("  %-12s %10s %12s %12s" % ("class", "instances", "baseline", "graph"))
-        for attack_class in sorted(by_class):
-            hits = by_class[attack_class]
-            instances = len(hits[DETECTOR_BASELINE])
-            print(
-                "  %-12s %10d %11.0f%% %11.0f%%"
-                % (
-                    attack_class,
-                    instances,
-                    100 * sum(hits[DETECTOR_BASELINE]) / instances,
-                    100 * sum(hits[DETECTOR_GRAPH]) / instances,
+    write_csv(output / "evidence_map.csv", evidence)
+    # Each run-level table retains its run ID; aggregate timing with per-trial
+    # means so frequent alerts do not give a trial disproportionate weight.
+    summary = []
+    for key, metric in [
+        ("timing", "alert_to_decision"),
+        ("timing", "decision_to_confirmation"),
+        ("installation", "flowmod_to_confirmation"),
+    ]:
+        groups = defaultdict(list)
+        for r in valid:
+            mean = stats([row.get(metric) for row in r[key]])["mean"]
+            identity = r["identity"]
+            groups[(identity["phase"], identity["case"], identity["mitigator"])].append(
+                mean
+            )
+        for group, values in groups.items():
+            summary.append(
+                dict(
+                    phase=group[0],
+                    case=group[1],
+                    mitigator=group[2],
+                    metric=metric,
+                    **stats(values),
                 )
             )
+    write_csv(output / "timing_summary.csv", summary)
+    try:
+        import matplotlib
 
-    normal_only = [r for r in results if not r["attacks"]]
-    if normal_only:
-        print("\nFalse positives on normal-only traffic (%d run(s)):" % len(normal_only))
-        for detector in DETECTORS:
-            total = sum(r["detectors"][detector]["false_positives"] for r in normal_only)
-            print("  %-10s %d alert(s)" % (detector, total))
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
 
-    costs = [r["overhead"]["graph_cost_ratio"] for r in results
-             if r["overhead"]["graph_cost_ratio"]]
-    if costs:
-        print("\nCost of the graph detector relative to the baseline: %.1fx per window"
-              % statistics.mean(costs))
-
-    latencies = [r["timing"]["mean_install_latency"] for r in results
-                 if r["timing"]["mean_install_latency"]]
-    if latencies:
-        print("Mean rule-installation latency (FlowMod to switch confirmation): %.1f ms"
-              % (1000 * statistics.mean(latencies)))
-
-    containment = [r["timing"]["mean_time_to_containment"] for r in results
-                   if r["timing"]["mean_time_to_containment"]]
-    if containment:
-        print("Mean time to containment (first malicious packet to rule confirmed): "
-              "%.1f s" % statistics.mean(containment))
-
-    innocent = sum(r["disruption"]["innocent_hosts_blocked"] for r in results)
-    print("Innocent hosts blocked across all runs: %d" % innocent)
+        primary = [r for r in coverage if r["cohort"] == "primary"]
+        fig, ax = plt.subplots(figsize=(8, 4))
+        classes = sorted({r["attack_class"] for r in primary})
+        for i, detector in enumerate(DETECTORS):
+            values = [
+                next(
+                    (
+                        r["coverage"]
+                        for r in primary
+                        if r["attack_class"] == c and r["detector"] == detector
+                    ),
+                    0,
+                )
+                for c in classes
+            ]
+            ax.bar(
+                [x + (i - 0.5) * 0.35 for x in range(len(classes))],
+                values,
+                width=0.35,
+                label=detector,
+            )
+        ax.set_xticks(range(len(classes)))
+        ax.set_xticklabels(classes)
+        ax.set_ylabel("Attacker identification coverage")
+        ax.set_ylim(0, 1.05)
+        if classes:
+            ax.legend()
+        fig.tight_layout()
+        fig.savefig(output / "coverage.png", dpi=150)
+        plt.close(fig)
+        costs = [
+            r
+            for result in valid
+            for r in result["overhead"]
+            if r["period"] == "evaluation"
+        ]
+        values = [
+            [r[key] * 1000 for r in costs if r.get(key) is not None]
+            for key in ["baseline_seconds_mean", "graph_total_seconds_mean"]
+        ]
+        if all(values):
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.boxplot(values, labels=DETECTORS)
+            ax.set_yscale("log")
+            ax.set_ylabel("Per-run mean detector time (ms)")
+            fig.tight_layout()
+            fig.savefig(output / "detector_cost.png", dpi=150)
+            plt.close(fig)
+    except ImportError:
+        pass
+    return results
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--raw", default=config.RESULTS_RAW_DIR)
-    parser.add_argument("--tables", default=config.RESULTS_TABLES_DIR)
-    parser.add_argument("--figs", default=config.RESULTS_FIGS_DIR)
+    parser.add_argument("--output", default="results/analysis")
     args = parser.parse_args()
-
-    runs = discover_runs(args.raw)
-    if not runs:
-        print("no runs found in %s -- run experiments/run_case.py first" % args.raw)
-        return 1
-
-    print("analysing %d run(s) from %s" % (len(runs), args.raw))
-    results = [score_run(run) for run in runs]
-
-    for path in build_tables(results, args.tables):
-        print("  wrote %s" % path)
-    for path in build_figures(results, args.figs):
-        print("  wrote %s" % path)
-
-    print_summary(results)
-    return 0
+    results = analyze(args.raw, args.output)
+    print(
+        json.dumps(
+            dict(runs=len(results), valid=sum(r["validity"]["valid"] for r in results))
+        )
+    )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

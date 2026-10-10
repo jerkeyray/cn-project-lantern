@@ -62,6 +62,7 @@ class LanternIDS(app_manager.RyuApp):
         super(LanternIDS, self).__init__(*args, **kwargs)
 
         self.epoch = time.monotonic()
+        self.wall_epoch = time.time()
         self.event_log = EventLog(SETTINGS["log"], epoch=self.epoch)
         self.mac_to_port = {}
         self.datapaths = {}
@@ -69,7 +70,7 @@ class LanternIDS(app_manager.RyuApp):
         self.collector = FlowCollector(
             logger=self.logger,
             clock=self.clock,
-            epoch=0.0,                      # collector clock is already run-relative
+            epoch=0.0,  # collector clock is already run-relative
             on_window_closed=self.on_window_closed,
         )
         self.baseline = BaselineDetector()
@@ -140,7 +141,9 @@ class LanternIDS(app_manager.RyuApp):
             priority=0,
             match=parser.OFPMatch(),
             actions=[
-                parser.OFPActionOutput(ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER)
+                parser.OFPActionOutput(
+                    ofproto.OFPP_CONTROLLER, ofproto.OFPCML_NO_BUFFER
+                )
             ],
         )
         self.logger.info("switch %016x connected", datapath.id)
@@ -155,8 +158,16 @@ class LanternIDS(app_manager.RyuApp):
             self.mitigation.unregister(datapath.id)
             self.event_log.write("switch_disconnected", {"dpid": datapath.id})
 
-    def _add_flow(self, datapath, priority, match, actions,
-                  idle_timeout=0, hard_timeout=0, buffer_id=None):
+    def _add_flow(
+        self,
+        datapath,
+        priority,
+        match,
+        actions,
+        idle_timeout=0,
+        hard_timeout=0,
+        buffer_id=None,
+    ):
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
         kwargs = dict(
@@ -275,6 +286,7 @@ class LanternIDS(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPFlowRemoved, MAIN_DISPATCHER)
     def flow_removed_handler(self, ev):
         self.collector.handle_flow_removed(ev.msg)
+        self.mitigation.handle_flow_removed(ev.msg)
 
     @set_ev_cls(ofp_event.EventOFPBarrierReply, MAIN_DISPATCHER)
     def barrier_reply_handler(self, ev):
@@ -288,6 +300,8 @@ class LanternIDS(app_manager.RyuApp):
         """Score one closed window with both detectors and act on the result."""
         self.event_log.write("window_closed", summarise_window(window))
 
+        warming_up = self.graph_builder.warming_up
+        eligible = [h for h in window.hosts if self.graph_builder.profile_for(h).ready]
         baseline_alerts = self.baseline.detect(window)
         graph_alerts = self.graph.detect(window)
 
@@ -295,9 +309,34 @@ class LanternIDS(app_manager.RyuApp):
         timing.update(self.graph.timing_snapshot())
         timing["window_index"] = window.index
         timing["hosts"] = len(window.active_hosts())
-        timing["warming_up"] = self.graph_builder.warming_up
+        timing["complete_window"] = window.end <= self.clock()
+        timing["warming_up"] = warming_up
+        timing["window_start_wall"] = self.wall_epoch + window.start
+        timing["window_end_wall"] = self.wall_epoch + window.end
+        timing["eligible_hosts"] = eligible if not warming_up else []
+        timing["baseline_features"] = {
+            "PORTSCAN_PORTS": max(
+                [len(h.initiated_ports) for h in window.hosts.values()] or [0]
+            ),
+            "PORTSCAN_HOSTS": max(
+                [len(h.initiated_hosts) for h in window.hosts.values()] or [0]
+            ),
+            "DOS_PPS": max(
+                [p.packets / window.seconds for p in window.pairs.values()] or [0]
+            ),
+            "BRUTEFORCE_ATTEMPTS": max(
+                [v for h in window.hosts.values() for v in h.auth_attempts.values()]
+                or [0]
+            ),
+        }
         self.event_log.write("detector_timing", timing)
 
+        for alert in baseline_alerts + graph_alerts:
+            alert.window_start_wall = self.wall_epoch + window.start
+            alert.window_end_wall = self.wall_epoch + window.end
+            self.event_log.write(
+                "detector_candidate", dict(alert.to_dict(), warming_up=warming_up)
+            )
         for decision in self.alerts.submit(baseline_alerts + graph_alerts):
             self.mitigation.apply(decision)
 
@@ -307,6 +346,11 @@ class LanternIDS(app_manager.RyuApp):
         self.event_log.write(
             "mitigation_decided",
             {
+                "decision_id": decision.decision_id,
+                "alert_id": alert.alert_id,
+                "created_mono": alert.created_mono,
+                "decided_mono": decision.decided_mono,
+                "decided_wall": decision.decided_wall,
                 "action": decision.action,
                 "actuate": decision.actuate,
                 "reason": decision.reason,

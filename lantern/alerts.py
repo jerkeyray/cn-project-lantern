@@ -7,6 +7,8 @@ emitting this type and nothing more.
 """
 
 from dataclasses import dataclass, field
+import time
+import uuid
 
 # Attack classes. These strings are the join key between an alert and the
 # ground-truth marker an attack script writes, so they must not drift.
@@ -23,8 +25,13 @@ CLASS_LATERAL = "lateral"
 # analyst, and an alert an analyst cannot trust is worse than no alert.
 CLASS_GRAPH_ANOMALY = "graph_anomaly"
 
-ATTACK_CLASSES = (CLASS_PORTSCAN, CLASS_DOS, CLASS_BRUTEFORCE, CLASS_LATERAL,
-                  CLASS_GRAPH_ANOMALY)
+ATTACK_CLASSES = (
+    CLASS_PORTSCAN,
+    CLASS_DOS,
+    CLASS_BRUTEFORCE,
+    CLASS_LATERAL,
+    CLASS_GRAPH_ANOMALY,
+)
 
 # Which detector produced an alert. Every alert carries this so the analysis
 # can score the two detectors separately on identical traffic.
@@ -51,6 +58,12 @@ class Alert:
     reason: str = ""
     evidence: dict = field(default_factory=dict)
 
+    alert_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    created_mono: float = field(default_factory=time.monotonic)
+    created_wall: float = field(default_factory=time.time)
+    window_start_wall: float = None
+    window_end_wall: float = None
+
     @property
     def dedupe_key(self):
         """Alerts sharing this key are the same ongoing event, not new ones."""
@@ -58,6 +71,11 @@ class Alert:
 
     def to_dict(self):
         return {
+            "alert_id": self.alert_id,
+            "created_mono": self.created_mono,
+            "created_wall": self.created_wall,
+            "window_start_wall": self.window_start_wall,
+            "window_end_wall": self.window_end_wall,
             "detector": self.detector,
             "attack_class": self.attack_class,
             "src_ip": self.src_ip,

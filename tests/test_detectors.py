@@ -29,6 +29,7 @@ def classes(alerts):
 # Baseline detector
 # ----------------------------------------------------------------------
 
+
 class TestBaselineDetector:
     def test_normal_traffic_raises_nothing(self):
         window = build_window(
@@ -75,8 +76,14 @@ class TestBaselineDetector:
     def test_brute_force_on_an_auth_port_is_caught(self):
         window = build_window(
             [
-                record(ATTACKER, AUTH, ts=i * 0.05, port=22, flags=TCP_SYN,
-                       src_port=40000 + i)
+                record(
+                    ATTACKER,
+                    AUTH,
+                    ts=i * 0.05,
+                    port=22,
+                    flags=TCP_SYN,
+                    src_port=40000 + i,
+                )
                 for i in range(config.BRUTEFORCE_ATTEMPTS + 10)
             ]
         )
@@ -86,8 +93,14 @@ class TestBaselineDetector:
     def test_repeated_connections_to_a_non_auth_port_are_not_brute_force(self):
         window = build_window(
             [
-                record(WORKSTATION, SERVER, ts=i * 0.05, port=80, flags=TCP_SYN,
-                       src_port=40000 + i)
+                record(
+                    WORKSTATION,
+                    SERVER,
+                    ts=i * 0.05,
+                    port=80,
+                    flags=TCP_SYN,
+                    src_port=40000 + i,
+                )
                 for i in range(config.BRUTEFORCE_ATTEMPTS + 10)
             ]
         )
@@ -97,6 +110,7 @@ class TestBaselineDetector:
 # ----------------------------------------------------------------------
 # Graph detector
 # ----------------------------------------------------------------------
+
 
 def warm_up(detector, windows=None, ts_base=0.0):
     """Feed the detector a stable normal pattern until its profiles are ready.
@@ -233,8 +247,9 @@ class TestBaselineIgnoresReplyTraffic:
     def test_a_server_replying_to_many_clients_is_not_a_port_scan(self):
         clients = ["10.0.0.%d" % n for n in range(1, 6)]
         replies = [
-            record(SERVER, client, ts=i * 0.2, port=40000 + i * 137,
-                   is_initiation=False)
+            record(
+                SERVER, client, ts=i * 0.2, port=40000 + i * 137, is_initiation=False
+            )
             for i, client in enumerate(clients * 6)
         ]
         window = build_window(replies)
@@ -249,8 +264,7 @@ class TestBaselineIgnoresReplyTraffic:
             for i in range(config.PORTSCAN_PORTS + 5)
         ]
         replies = [
-            record(SERVER, ATTACKER, ts=i * 0.05, port=40000 + i,
-                   is_initiation=False)
+            record(SERVER, ATTACKER, ts=i * 0.05, port=40000 + i, is_initiation=False)
             for i in range(config.PORTSCAN_PORTS + 5)
         ]
         alerts = BaselineDetector().detect(build_window(scan + replies))
@@ -278,9 +292,9 @@ class TestGraphDetectorDoesNotBlameVictims:
 
         flagged = {a.src_ip for a in alerts}
         assert ATTACKER in flagged
-        assert flagged == {ATTACKER}, (
-            "only the host that reached out should be flagged, got %s" % sorted(flagged)
-        )
+        assert flagged == {
+            ATTACKER
+        }, "only the host that reached out should be flagged, got %s" % sorted(flagged)
 
     def test_a_host_that_only_receives_traffic_is_never_scored_up(self):
         detector = GraphDetector(GraphBuilder())
@@ -313,9 +327,9 @@ class TestClassificationIsStable:
             alerts = detector.detect(lateral_window())
             labels.update(a.attack_class for a in alerts if a.src_ip == ATTACKER)
 
-        assert labels == {CLASS_LATERAL}, (
-            "identical evidence produced varying labels: %s" % sorted(labels)
-        )
+        assert labels == {
+            CLASS_LATERAL
+        }, "identical evidence produced varying labels: %s" % sorted(labels)
 
     def test_an_anomaly_with_no_new_neighbours_is_not_called_lateral(self):
         """A host going loud against machines it always talks to has not moved."""

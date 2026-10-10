@@ -57,7 +57,7 @@ class HostProfile:
         # being scanned would teach a victim that the scanner is a normal peer.
         self.seen_neighbours = set()
 
-        # Louvain community id from the previous window, for change detection.
+        # Peer membership set from the previous window (independent of labels).
         self.last_community = None
 
     @property
@@ -77,8 +77,10 @@ class HostProfile:
         quiet host from being a hair trigger, and it is per-feature because the
         features are not on a common scale -- see MIN_SIGMA_BY_FEATURE.
         """
-        return max(math.sqrt(max(self._variance.get(feature, 0.0), 0.0)),
-                   config.min_sigma(feature))
+        return max(
+            math.sqrt(max(self._variance.get(feature, 0.0), 0.0)),
+            config.min_sigma(feature),
+        )
 
     def zscore(self, feature, value):
         """How unusual `value` is for this host, clamped."""

@@ -4,7 +4,7 @@
 # newest interpreter Ryu 4.34 works on reliably (Ryu depends on eventlet, whose
 # monkey-patching broke on Python 3.10+ and on eventlet >= 0.31). Ubuntu 22.04
 # would give us a Python 3 Mininet package but a Python 3.10 that Ryu cannot use.
-FROM ubuntu:20.04
+FROM ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # support. mnexec is a small C helper Mininet shells out to for namespace entry.
 RUN git clone --depth 1 --branch 2.3.0 https://github.com/mininet/mininet.git /tmp/mininet \
     && cd /tmp/mininet \
+    && test "$(git rev-parse HEAD)" = d7f399d7a1200b602bd6a95ae88bae1009664d4a \
     && make mnexec \
     && install -m 755 mnexec /usr/local/bin/mnexec \
     && python3 setup.py install \
@@ -36,9 +37,9 @@ RUN git clone --depth 1 --branch 2.3.0 https://github.com/mininet/mininet.git /t
 
 # Ryu 4.34 is the last release; it is unmaintained, so every transitive
 # dependency that has since broken compatibility is pinned explicitly here.
-COPY docker/requirements.txt /tmp/requirements.txt
-RUN python3 -m pip install --no-cache-dir --upgrade "pip<21.4" "setuptools<60" wheel \
-    && python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+COPY docker/requirements.txt docker/constraints.txt /tmp/
+RUN python3 -m pip install --no-cache-dir --upgrade "pip==21.3.1" "setuptools==59.8.0" "wheel==0.45.1" \
+    && python3 -m pip install --no-cache-dir -c /tmp/constraints.txt -r /tmp/requirements.txt
 
 WORKDIR /opt/lantern
 ENV PYTHONPATH=/opt/lantern

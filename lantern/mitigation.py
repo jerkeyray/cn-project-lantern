@@ -58,7 +58,7 @@ class MitigationEngine:
         self.on_event = on_event or (lambda kind, payload: None)
 
         self._datapaths = {}
-        self._pending_barriers = {}     # (dpid, xid) -> InstalledRule
+        self._pending_barriers = {}  # (dpid, xid) -> InstalledRule
         self.installed = []
         self._next_cookie = 0x10000
 
@@ -70,8 +70,8 @@ class MitigationEngine:
 
     @property
     def rule_count(self):
-        """Installed mitigation rules -- the flow-table (TCAM) usage metric."""
-        return len(self.installed)
+        """Currently active mitigation rules; hardware TCAM is not measured."""
+        return sum(rule.active for rule in self.installed)
 
     # ------------------------------------------------------------------
 
@@ -86,7 +86,18 @@ class MitigationEngine:
         if not decision.actuate or decision.action == ACTION_LOG_ONLY:
             return []
 
+        if decision.action == ACTION_REDIRECT:
+            raise ValueError("redirect mitigation is not implemented")
         alert = decision.alert
+        self.on_event(
+            "mitigation_targeted",
+            {
+                "decision_id": decision.decision_id,
+                "alert_id": alert.alert_id,
+                "switches": sorted(self._datapaths),
+                "decided_mono": decision.decided_mono,
+            },
+        )
         rules = []
         for datapath in list(self._datapaths.values()):
             rule = self._install(datapath, decision, alert)
@@ -143,6 +154,9 @@ class MitigationEngine:
             sent_at=sent_at,
             cookie=cookie,
         )
+        rule.decision_id = decision.decision_id
+        rule.alert_id = alert.alert_id
+        rule.active = True
         self.installed.append(rule)
 
         # The barrier is what converts "we sent a FlowMod" into "the switch has
@@ -154,6 +168,8 @@ class MitigationEngine:
         self.on_event(
             "flowmod_sent",
             {
+                "decision_id": decision.decision_id,
+                "alert_id": alert.alert_id,
                 "ts": sent_at,
                 "dpid": datapath.id,
                 "action": decision.action,
@@ -185,6 +201,8 @@ class MitigationEngine:
         self.on_event(
             "barrier_reply",
             {
+                "decision_id": rule.decision_id,
+                "alert_id": rule.alert_id,
                 "ts": rule.confirmed_at,
                 "dpid": rule.dpid,
                 "cookie": rule.cookie,
@@ -194,15 +212,29 @@ class MitigationEngine:
         )
         return rule
 
+    def handle_flow_removed(self, msg):
+        for rule in self.installed:
+            if rule.dpid == msg.datapath.id and rule.cookie == msg.cookie:
+                rule.active = False
+                self.on_event(
+                    "mitigation_expired",
+                    {
+                        "cookie": rule.cookie,
+                        "dpid": rule.dpid,
+                        "decision_id": rule.decision_id,
+                    },
+                )
+
     def blocked_matches(self):
         """Every match currently installed, for the disruption analysis."""
-        return [rule.to_dict() for rule in self.installed]
+        return [rule.to_dict() for rule in self.installed if rule.active]
 
     def snapshot(self):
         confirmed = [r for r in self.installed if r.confirmed_at is not None]
         latencies = [r.install_latency for r in confirmed]
         return {
             "rules_installed": len(self.installed),
+            "active_mitigation_rules": self.rule_count,
             "rules_confirmed": len(confirmed),
             "mean_install_latency": (
                 sum(latencies) / len(latencies) if latencies else None

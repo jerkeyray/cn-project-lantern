@@ -8,9 +8,10 @@ detectors -- sees only this vocabulary.
 """
 
 import math
-try:                                     # Python 3.7+
+
+try:  # Python 3.7+
     from dataclasses import dataclass, field
-except ImportError:                      # pragma: no cover
+except ImportError:  # pragma: no cover
     raise
 
 from lantern import config
@@ -100,7 +101,9 @@ class HostStats:
     # above, are what the port-scan rule is allowed to look at.
     initiated_hosts: set = field(default_factory=set)
     initiated_ports: set = field(default_factory=set)
-    auth_attempts: dict = field(default_factory=dict)  # dst_ip -> SYN count on auth ports
+    auth_attempts: dict = field(
+        default_factory=dict
+    )  # dst_ip -> SYN count on auth ports
     failed_connections: int = 0
 
     def rate(self, window_seconds):
@@ -121,8 +124,8 @@ class Window:
     index: int
     start: float
     end: float
-    pairs: dict = field(default_factory=dict)   # (src, dst) -> PairStats
-    hosts: dict = field(default_factory=dict)   # src        -> HostStats
+    pairs: dict = field(default_factory=dict)  # (src, dst) -> PairStats
+    hosts: dict = field(default_factory=dict)  # src        -> HostStats
     record_count: int = 0
 
     @property
@@ -192,7 +195,7 @@ class WindowAggregator:
     def __init__(self, window_seconds=None, epoch=0.0):
         self.window_seconds = window_seconds or config.WINDOW_SECONDS
         self.epoch = epoch
-        self._open = {}          # index -> Window
+        self._open = {}  # index -> Window
         self._highest_closed = -1
 
     def window_index(self, ts):

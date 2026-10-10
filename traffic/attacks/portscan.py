@@ -10,15 +10,35 @@ import random
 import sys
 import time
 
-sys.path.insert(0, "/opt/lantern")
 
-from scapy.all import IP, TCP, send  # noqa: E402
+from scapy.all import IP, TCP  # noqa: E402
+
+from traffic.common import send
 
 from lantern import config  # noqa: E402
-from traffic.common import GroundTruth, attack_parser, jitter, resolve_source, seeded  # noqa: E402
+from traffic.common import (
+    GroundTruth,
+    attack_parser,
+    jitter,
+    resolve_source,
+    seeded,
+)  # noqa: E402
 
-DEFAULT_PORTS = list(range(20, 90)) + [110, 143, 443, 445, 993, 995, 1433,
-                                       3306, 3389, 5432, 5900, 8080, 8443]
+DEFAULT_PORTS = list(range(20, 90)) + [
+    110,
+    143,
+    443,
+    445,
+    993,
+    995,
+    1433,
+    3306,
+    3389,
+    5432,
+    5900,
+    8080,
+    8443,
+]
 
 
 def run(src_ip, target_ip, ports, delay=0.05, verbose=False):
@@ -44,9 +64,14 @@ def main():
     src_ip = resolve_source(args)
     target_ip = args.target or config.HOST_TO_IP[config.APP_SERVER]
 
-    with GroundTruth("portscan", args.case, args.trial, src_ip,
-                     targets=[target_ip],
-                     note="TCP SYN sweep across %d ports" % len(DEFAULT_PORTS)):
+    with GroundTruth(
+        "portscan",
+        args.case,
+        args.trial,
+        src_ip,
+        targets=[target_ip],
+        note="TCP SYN sweep across %d ports" % len(DEFAULT_PORTS),
+    ):
         scanned = run(src_ip, target_ip, DEFAULT_PORTS, delay=args.delay)
 
     print("portscan: %s -> %s, %d ports" % (src_ip, target_ip, scanned))

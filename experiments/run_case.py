@@ -1,202 +1,166 @@
-"""Run one experimental case, one or more trials.
-
-    python3 experiments/run_case.py --case C5 --trials 3
-
-Every trial is a complete, independent run: fresh controller, fresh topology,
-fresh profiles. Nothing carries over between trials, so the repeated runs the
-report calls for are genuinely independent rather than a single run measured
-several times.
-"""
+"""Execute one isolated trial. Prefer the host campaign driver for repetitions."""
 
 import argparse
+import json
 import os
-import sys
+from pathlib import Path
 import time
+from lantern import config
+from lantern.metrics import run_log_path
+from experiments.cases import CASES, FORCED_MITIGATOR
+from experiments.validation import read_events, validate_run
 
-sys.path.insert(0, "/opt/lantern")
-
-from mininet.log import setLogLevel  # noqa: E402
-
-from lantern import config  # noqa: E402
-from lantern.metrics import run_log_path, truth_log_path  # noqa: E402
-from experiments.cases import CASES, FORCED_MITIGATOR  # noqa: E402
-from experiments.runner import Controller, Workload, dump_flows  # noqa: E402
-from topo.lantern_topo import build_network  # noqa: E402
-
-# Warmup must cover the graph detector's profile warmup with room to spare;
-# scoring cannot begin until every host has a profile.
-WARMUP_SECONDS = config.PROFILE_WARMUP_WINDOWS * config.WINDOW_SECONDS + 10.0
-
-# After the attacks stop, the run continues briefly so that the last window
-# closes and is scored. Without this the final -- often the most interesting --
-# window would be discarded at teardown.
-DRAIN_SECONDS = config.WINDOW_SECONDS * 2 + 5.0
+WARMUP_SECONDS = config.PROFILE_WARMUP_WINDOWS * config.WINDOW_SECONDS + 15.0
+DRAIN_SECONDS = 45.0  # permits idle rule expiry and service recovery
 
 
-def check_connectivity(net):
-    """Confirm the control loop forwards traffic, without polluting the graph.
-
-    Mininet's pingAll would be the obvious check, and it is the wrong one here:
-    it makes every host contact every other host, which teaches the graph
-    detector that full-mesh communication is this network's normal. The very
-    signal lateral movement depends on -- a workstation contacting peers it has
-    never contacted -- would be trained away before the experiment began.
-
-    So the check follows the same client-server shape as the normal workload:
-    each workstation pings the application server, nothing else.
-    """
-    server = net.get(config.APP_SERVER)
-    failures = []
-    for name in config.WORKSTATIONS:
-        host = net.get(name)
-        result = host.cmd("ping -c 1 -W 2 %s" % server.IP())
-        if " 0% packet loss" not in result:
-            failures.append(name)
-    if failures:
-        raise RuntimeError(
-            "no connectivity from %s to the application server; the control "
-            "loop is not forwarding" % ", ".join(failures)
-        )
+def reserve_run(label, trial):
+    path = Path(run_log_path(label, trial))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if list(path.parent.glob(path.stem + "*")):
+        raise FileExistsError("run already exists: " + str(path))
+    path.with_suffix(".reserved").touch(exist_ok=False)
+    return str(path)
 
 
-def run_trial(case, trial, mitigator, warmup=None, seed=None, verbose=False,
-              label=None):
-    """Run one trial of `case`.
+def monitor(seconds, controller, workload):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if controller.process.poll() is not None:
+            raise RuntimeError("controller exited prematurely")
+        workload.assert_alive()
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
-    `label` names the output files. It is separate from `case` so the same case
-    can be run more than once under different mitigator settings -- the
-    detection pass and the mitigation pass -- without the second run silently
-    overwriting the first.
-    """
-    case_definition = CASES[case]
-    mitigator = FORCED_MITIGATOR.get(case, mitigator)
+
+def run_trial(
+    case,
+    trial,
+    mitigator,
+    warmup=None,
+    seed=1000,
+    verbose=False,
+    label=None,
+    phase="detection",
+    observation=60,
+    reverse=False,
+    benign=False,
+):
+    from experiments.runner import Controller, Workload, dump_flows
+    from topo.lantern_topo import build_network, disable_offloads
+
     warmup = WARMUP_SECONDS if warmup is None else warmup
+    if warmup < config.PROFILE_WARMUP_WINDOWS * config.WINDOW_SECONDS:
+        raise ValueError("warmup is shorter than profiling minimum")
+    mitigator = FORCED_MITIGATOR.get(case, mitigator)
     label = label or case
-
-    log_path = run_log_path(label, trial)
-    truth_path = truth_log_path(label, trial)
-    for path in (log_path, truth_path):
-        if os.path.exists(path):
-            os.remove(path)
-
-    attack_seconds = case_definition.attack_duration
-    total_workload = warmup + attack_seconds + DRAIN_SECONDS
-
-    print("\n=== %s trial %d ===" % (label, trial))
-    print("    purpose:   %s" % case_definition.purpose)
-    print("    mitigator: %s" % mitigator)
-    print("    warmup:    %.0fs   drain: %.0fs" % (warmup, DRAIN_SECONDS))
-
-    controller = Controller(label, trial, mitigator, log_path)
-    controller.start()
-
-    net = build_network()
-    workload = None
+    log = reserve_run(label, trial)
+    metadata = dict(
+        case=case,
+        trial=trial,
+        mitigator=mitigator,
+        seed=seed,
+        phase=phase,
+        reverse=reverse,
+        benign=benign,
+        warmup=warmup,
+        observation=observation,
+        started_wall=time.time(),
+    )
+    meta_path = Path(log).with_suffix(".meta.json")
+    meta_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    controller = Controller(label, trial, mitigator, log)
+    net = workload = None
+    reasons = []
+    attacks = list(CASES[case].attacks)
+    if reverse:
+        attacks.reverse()
     try:
+        controller.start()
+        net = build_network()
         net.start()
-
-        # Pre-populate every host's ARP table.
-        #
-        # Without this, Linux drops packets while an ARP resolution is pending
-        # -- and scapy sends one packet and moves on, so most generated traffic
-        # never reached the wire at all. It also removes a large source of
-        # broadcast noise: ARP floods to every port, which both inflates the
-        # PacketIn count the overhead metric reports and would add an edge from
-        # every host to every other host if it were modelled.
+        disable_offloads(net)
         net.staticArp()
-
-        # Let the switches finish connecting and the learning switch settle
-        # before any measurement begins.
         time.sleep(3)
-        check_connectivity(net)
-
+        for name in list(config.WORKSTATIONS) + [config.ATTACKER]:
+            output = net.get(name).cmd(
+                "ping -c 1 -W 2 " + config.HOST_TO_IP[config.APP_SERVER]
+            )
+            if " 0% packet loss" not in output:
+                raise RuntimeError("connectivity failed for " + name)
         workload = Workload(net, label, trial)
+        workload.controller = controller
+        workload.start_measurements()
         workload.start_normal(
-            duration=total_workload, rate=case_definition.normal_rate, seed=seed
+            duration=0,
+            rate=CASES[case].normal_rate,
+            seed=seed,
+            peer_after=warmup if benign else None,
+            rate_switch_after=(
+                warmup + observation / 2 if phase == "calibration" else None
+            ),
         )
-
-        print("    warming up profiles (%.0fs)..." % warmup)
-        time.sleep(warmup)
-
-        for module, extra_args in case_definition.attacks:
-            print("    running %s" % os.path.basename(module))
-            args = list(extra_args)
-            if seed is not None:
-                args += ["--seed", str(seed)]
-            code = workload.run_attack(module, extra_args=args)
-            if code != 0:
-                print("    WARNING: %s exited with code %d" % (module, code))
-
-        print("    draining (%.0fs)..." % DRAIN_SECONDS)
-        time.sleep(DRAIN_SECONDS)
-
-        flows_path = log_path.replace(".jsonl", ".flows.txt")
-        dump_flows(net, flows_path)
-        print("    flow tables written to %s" % flows_path)
-
+        monitor(warmup, controller, workload)
+        metadata["evaluation_start"] = time.time()
+        events = read_events(log)
+        ready = [
+            e for e in events if e["kind"] == "detector_timing" and not e["warming_up"]
+        ]
+        if (
+            not ready
+            or config.HOST_TO_IP[config.ATTACKER] not in ready[-1]["eligible_hosts"]
+        ):
+            raise RuntimeError("attacker profile is not ready")
+        for index, (module, args) in enumerate(attacks):
+            code = workload.run_attack(
+                module, extra_args=list(args) + ["--seed", str(seed + index)]
+            )
+            if code:
+                raise RuntimeError("%s exited with %d" % (module, code))
+        if not attacks:
+            monitor(observation, controller, workload)
+        metadata["recovery_start"] = time.time()
+        monitor(DRAIN_SECONDS, controller, workload)
+        dump_flows(net, log.replace(".jsonl", ".flows.txt"))
+    except Exception as exc:
+        reasons.append("%s: %s" % (type(exc).__name__, exc))
     finally:
-        if workload is not None:
+        if workload:
             workload.stop()
-        net.stop()
+        if net:
+            net.stop()
         controller.stop()
-
-    print("    log: %s" % log_path)
-    return log_path
+    metadata["ended_wall"] = time.time()
+    meta_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    validity = validate_run(log, len(attacks))
+    validity["reasons"] += reasons
+    validity["valid"] = not validity["reasons"]
+    Path(log).with_suffix(".validity.json").write_text(
+        json.dumps(validity, indent=2) + "\n"
+    )
+    print(json.dumps(dict(log=log, **validity)), flush=True)
+    if not validity["valid"]:
+        raise RuntimeError("invalid run: " + "; ".join(validity["reasons"]))
+    return log
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(__doc__)
     parser.add_argument("--case", required=True, choices=sorted(CASES))
-    parser.add_argument("--trials", type=int, default=1,
-                        help="run trials 1..N")
-    parser.add_argument(
-        "--trial",
-        type=int,
-        default=None,
-        help="run exactly this one trial number instead of 1..N; used by the "
-             "sweep driver, which runs each trial in its own container",
-    )
-    parser.add_argument(
-        "--mitigator",
-        default=config.DEFAULT_MITIGATOR,
-        choices=list(config.MITIGATOR_MODES),
-        help="which detector may install rules (C7 always forces 'none')",
-    )
-    parser.add_argument(
-        "--warmup",
-        type=float,
-        default=None,
-        help="override warmup seconds (shortening it below the profile warmup "
-             "will disable graph scoring)",
-    )
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument(
-        "--label",
-        default=None,
-        help="name for this run's output files (defaults to the case name); "
-             "lets the same case be run under several mitigator settings",
-    )
-    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--trial", type=int, default=1)
+    parser.add_argument("--mitigator", choices=config.MITIGATOR_MODES, default="none")
+    parser.add_argument("--warmup", type=float, default=WARMUP_SECONDS)
+    parser.add_argument("--seed", type=int, default=1001)
+    parser.add_argument("--label")
+    parser.add_argument("--phase", default="detection")
+    parser.add_argument("--observation", type=float, default=60)
+    parser.add_argument("--reverse", action="store_true")
+    parser.add_argument("--benign", action="store_true")
     args = parser.parse_args()
+    from mininet.log import setLogLevel
 
-    setLogLevel("warning" if not args.verbose else "info")
-
-    trials = [args.trial] if args.trial is not None else range(1, args.trials + 1)
-    for trial in trials:
-        seed = None if args.seed is None else args.seed + trial
-        run_trial(
-            args.case,
-            trial,
-            args.mitigator,
-            warmup=args.warmup,
-            seed=seed,
-            verbose=args.verbose,
-            label=args.label,
-        )
-
-    print("\nDone. Analyse with: python3 experiments/analyze.py")
-    return 0
+    setLogLevel("warning")
+    run_trial(**vars(args))
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

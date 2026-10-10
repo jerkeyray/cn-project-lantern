@@ -1,13 +1,7 @@
-"""Per-flow threshold detector (Algorithm B, report section 5.3).
+"""Threshold baseline over per-source and per-pair window statistics.
 
-This is the *baseline*: it represents the approach used by essentially every
-paper in the literature survey -- score one flow, or one source's flows, at a
-time, against a fixed threshold. It exists to be beaten, or not beaten, by the
-graph detector on identical traffic.
-
-It is written to be a fair opponent, not a straw man. The thresholds are the
-ones a competent engineer would pick, and they are tuned on normal traffic
-(experimental case C1) rather than set low enough to look bad.
+Calibration uses normal-only data. The comparison concerns this concrete
+baseline, not all per-flow methods or the entire surveyed literature.
 """
 
 import time
@@ -152,7 +146,8 @@ class BaselineDetector:
 
                 pair = window.pairs.get((host.host, dst_ip))
                 auth_ports = sorted(
-                    p for p in (pair.dst_ports if pair else set())
+                    p
+                    for p in (pair.dst_ports if pair else set())
                     if p in self.cfg.AUTH_PORTS
                 )
 
@@ -163,6 +158,7 @@ class BaselineDetector:
                         src_ip=host.host,
                         dst_ip=dst_ip,
                         dst_port=auth_ports[0] if auth_ports else None,
+                        protocol=6,
                         ts=window.end,
                         window_index=window.index,
                         severity=SEVERITY_HIGH,

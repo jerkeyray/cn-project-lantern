@@ -27,7 +27,6 @@ from mininet.net import Mininet
 from mininet.node import OVSSwitch, RemoteController
 from mininet.topo import Topo
 
-sys.path.insert(0, "/opt/lantern")
 from lantern import config  # noqa: E402
 
 
@@ -88,6 +87,21 @@ def build_network(controller_ip=None, controller_port=None):
         port=controller_port,
     )
     return net
+
+
+def disable_offloads(net):
+    """Userspace OVS cannot complete veth checksum/segmentation offloads.
+
+    Without this, synthetic Scapy packets and ICMP pass but kernel TCP SYNs
+    arrive with unfinished checksums and real HTTP connections time out.
+    """
+    for node in net.hosts + net.switches:
+        for interface in node.intfList():
+            if interface.name != "lo":
+                node.cmd(
+                    "ethtool -K %s tx off rx off tso off gso off gro off sg off"
+                    % interface.name
+                )
 
 
 def self_test():

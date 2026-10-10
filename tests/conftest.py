@@ -4,15 +4,24 @@ import sys
 
 import pytest
 
-sys.path.insert(0, "/opt/lantern")
 
 from lantern.features import PROTO_TCP, FlowRecord, WindowAggregator  # noqa: E402
 
 TCP_SYN = 0x02
 
 
-def record(src, dst, ts=1.0, port=80, packets=1, bytes_=64,
-           protocol=PROTO_TCP, flags=0, src_port=40000, is_initiation=None):
+def record(
+    src,
+    dst,
+    ts=1.0,
+    port=80,
+    packets=1,
+    bytes_=64,
+    protocol=PROTO_TCP,
+    flags=0,
+    src_port=40000,
+    is_initiation=None,
+):
     # Synthetic records default to being initiations, because every fixture
     # here models a host reaching out rather than replying. Reply traffic is
     # constructed explicitly with is_initiation=False.

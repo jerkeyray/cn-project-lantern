@@ -1,49 +1,44 @@
-"""Lateral movement (experimental case C5) -- the scenario the project is about.
+"""Sequential internal-contact simulation from one source host.
 
-A compromised host works its way across the internal network: it contacts one
-unfamiliar machine, then another, on ordinary service ports, a handful of
-packets each.
-
-**The design constraint that makes this a valid experiment:** every individual
-connection here must be unremarkable, and the pacing must stay *below every
-threshold the per-flow baseline uses*. If this script tripped the baseline's
-port-scan rule, the comparison would no longer be testing the claim the project
-makes -- that graph structure exposes behaviour per-flow analysis cannot see.
-It would only be testing which detector has the lower threshold.
-
-So the pacing is chosen against `lantern/config.py`, and `check_pacing()`
-verifies it at runtime rather than trusting that it is still true after someone
-retunes a threshold. A scenario that has drifted loud is a scenario bug, and it
-should fail noisily rather than quietly hand the baseline a win.
+A fixed, low-volume path is evaluated against frozen detectors. This is not a
+successful compromise or a multi-host propagation chain. Threshold comparisons
+are diagnostics only: a baseline detection is a valid experimental outcome.
 """
 
 import random
 import sys
 import time
 
-sys.path.insert(0, "/opt/lantern")
 
-from scapy.all import IP, TCP, send  # noqa: E402
+from scapy.all import IP, TCP  # noqa: E402
+
+from traffic.common import send
 
 from lantern import config  # noqa: E402
-from traffic.common import GroundTruth, attack_parser, jitter, resolve_source, seeded  # noqa: E402
+from traffic.common import (
+    GroundTruth,
+    attack_parser,
+    jitter,
+    resolve_source,
+    seeded,
+)  # noqa: E402
 
 # One plausible service port per target. Using a single port per host keeps the
 # per-window port count far below the port-scan rule, while still being the
 # kind of service an attacker would actually probe.
 DEFAULT_PATH = [
-    ("h1", 22),       # SSH to a workstation
-    ("h2", 445),      # SMB file sharing
-    ("h3", 3389),     # RDP
-    ("h5", 22),       # SSH to the auth server
-    ("server", 1433), # database
+    ("h1", 22),  # SSH to a workstation
+    ("h2", 445),  # SMB file sharing
+    ("h3", 3389),  # RDP
+    ("h5", 22),  # SSH to the auth server
+    ("server", 1433),  # database
 ]
 
 PACKETS_PER_TARGET = 3
 
 
 def check_pacing(dwell, packets_per_target=PACKETS_PER_TARGET):
-    """Verify this scenario cannot trip the baseline's thresholds.
+    """Report approximate pacing relative to the configured thresholds.
 
     Returns a list of problems; empty means the scenario is still a fair test.
     """
@@ -57,7 +52,7 @@ def check_pacing(dwell, packets_per_target=PACKETS_PER_TARGET):
             % (hosts_per_window, config.WINDOW_SECONDS, config.PORTSCAN_HOSTS)
         )
 
-    ports_per_window = hosts_per_window   # one port per target
+    ports_per_window = hosts_per_window  # one port per target
     if ports_per_window > config.PORTSCAN_PORTS:
         problems.append(
             "pacing touches ~%.1f ports per window, crossing the port threshold of %d"
@@ -75,8 +70,14 @@ def check_pacing(dwell, packets_per_target=PACKETS_PER_TARGET):
     return problems
 
 
-def run(src_ip, path, dwell, packets_per_target=PACKETS_PER_TARGET,
-        truth=None, verbose=False):
+def run(
+    src_ip,
+    path,
+    dwell,
+    packets_per_target=PACKETS_PER_TARGET,
+    truth=None,
+    verbose=False,
+):
     """Walk the path, pausing `dwell` seconds between targets."""
     visited = []
     for host_name, port in path:
@@ -86,13 +87,13 @@ def run(src_ip, path, dwell, packets_per_target=PACKETS_PER_TARGET,
 
         sport = random.randint(30000, 60000)
         for index in range(packets_per_target):
-            # A SYN then a small amount of traffic: exactly what a legitimate
-            # short-lived client connection looks like in isolation.
+            # A synthetic SYN and data-shaped packets; no TCP session is completed.
             flags = "S" if index == 0 else "A"
             payload = b"" if index == 0 else b"x" * random.randint(20, 120)
             send(
                 IP(src=src_ip, dst=target_ip)
-                / TCP(sport=sport, dport=port, flags=flags) / payload,
+                / TCP(sport=sport, dport=port, flags=flags)
+                / payload,
                 verbose=verbose,
             )
             time.sleep(jitter(0.15))
@@ -114,11 +115,6 @@ def main():
         help="seconds between targets; raise it to make the scenario quieter",
     )
     parser.add_argument("--packets", type=int, default=PACKETS_PER_TARGET)
-    parser.add_argument(
-        "--allow-loud",
-        action="store_true",
-        help="run even if the pacing would trip a baseline threshold",
-    )
     args = parser.parse_args()
     seeded(args.seed)
 
@@ -126,25 +122,26 @@ def main():
     if problems:
         for problem in problems:
             print("lateral: PACING PROBLEM: %s" % problem, file=sys.stderr)
-        if not args.allow_loud:
-            print(
-                "lateral: refusing to run -- a scenario the baseline can see on "
-                "volume alone does not test the project's claim. Re-run with "
-                "--allow-loud only if you intend that.",
-                file=sys.stderr,
-            )
-            return 2
+        print(
+            "lateral: diagnostic only; fixed workload is evaluated even when baseline thresholds are crossed",
+            file=sys.stderr,
+        )
 
     src_ip = resolve_source(args)
     with GroundTruth(
-        "lateral", args.case, args.trial, src_ip,
+        "lateral",
+        args.case,
+        args.trial,
+        src_ip,
         note="sequential contact with %d internal hosts, %d packets each, %.1fs apart"
         % (len(DEFAULT_PATH), args.packets, args.dwell),
     ) as truth:
         visited = run(src_ip, DEFAULT_PATH, args.dwell, args.packets, truth=truth)
 
-    print("lateral: %s reached %d hosts: %s"
-          % (src_ip, len(visited), ", ".join(v["host"] for v in visited)))
+    print(
+        "lateral: %s reached %d hosts: %s"
+        % (src_ip, len(visited), ", ".join(v["host"] for v in visited))
+    )
     return 0
 
 

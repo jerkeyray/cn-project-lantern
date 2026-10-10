@@ -38,10 +38,17 @@ EPHEMERAL_PORT_FLOOR = 32768
 class FlowCollector:
     """Owns the record stream, the counter differ and the window aggregator."""
 
-    def __init__(self, logger, clock, epoch, on_window_closed,
-                 window_seconds=None, poll_interval=None):
+    def __init__(
+        self,
+        logger,
+        clock,
+        epoch,
+        on_window_closed,
+        window_seconds=None,
+        poll_interval=None,
+    ):
         self.logger = logger
-        self.clock = clock                      # callable -> float, monotonic
+        self.clock = clock  # callable -> float, monotonic
         self.on_window_closed = on_window_closed
         self.differ = FlowStatsDiffer()
         self.aggregator = WindowAggregator(
@@ -60,6 +67,7 @@ class FlowCollector:
         self.packet_in_non_ip = 0
         self.records_rejected_late = 0
 
+        self.flow_tables = {}
         self._datapaths = {}
         self._poll_thread = None
         self._running = False
@@ -172,8 +180,29 @@ class FlowCollector:
         now = self.clock()
         dpid = msg.datapath.id
         records = []
+        self.flow_tables[str(dpid)] = {
+            "observed_at": now,
+            "forwarding": sum(
+                s.priority == config.LEARNING_SWITCH_PRIORITY for s in msg.body
+            ),
+            "mitigation": sum(
+                s.priority == config.MITIGATION_PRIORITY for s in msg.body
+            ),
+            "total": len(msg.body),
+            "drops": [
+                {
+                    "cookie": s.cookie,
+                    "packets": s.packet_count,
+                    "match": dict(s.match.items()),
+                }
+                for s in msg.body
+                if s.priority == config.MITIGATION_PRIORITY
+            ],
+        }
 
         for stat in msg.body:
+            if stat.priority != config.LEARNING_SWITCH_PRIORITY:
+                continue  # dropped packets must not feed the detector
             fields = stat.match
             src_ip = fields.get("ipv4_src")
             dst_ip = fields.get("ipv4_dst")
@@ -257,6 +286,7 @@ class FlowCollector:
 
     def overhead_snapshot(self):
         return {
+            "flow_tables": self.flow_tables,
             "packet_in_count": self.packet_in_count,
             "flow_stats_requests": self.flow_stats_request_count,
             "flow_stats_replies": self.flow_stats_reply_count,

@@ -34,8 +34,10 @@ class EventLog:
 
     def write(self, kind, payload=None):
         record = {
+            "schema_version": 2,
+            "mono": time.monotonic(),
             "kind": kind,
-            "t": time.monotonic() - self.epoch,   # seconds since run start
+            "t": time.monotonic() - self.epoch,  # seconds since run start
             "wall": time.time(),
         }
         if payload:
@@ -76,6 +78,7 @@ class ResourceSampler:
 
         try:
             import psutil
+
             self._process = psutil.Process(os.getpid())
             # First call establishes the baseline; it always returns 0.0.
             self._process.cpu_percent(None)
@@ -95,6 +98,7 @@ class ResourceSampler:
 
     def _loop(self):
         from ryu.lib import hub
+
         while self._running:
             self.sample()
             hub.sleep(self.interval)

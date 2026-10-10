@@ -11,8 +11,8 @@ import argparse
 import random
 import sys
 import time
+import uuid
 
-sys.path.insert(0, "/opt/lantern")
 
 from lantern import config  # noqa: E402
 from lantern.metrics import truth_log_path, write_truth_marker  # noqa: E402
@@ -32,6 +32,28 @@ def resolve_source(args):
     return args.src or config.HOST_TO_IP[config.ATTACKER]
 
 
+_active_truth = None
+
+
+def send(*args, **kwargs):
+    from scapy.all import send as scapy_send, IP
+
+    packets = args[0] if isinstance(args[0], list) else [args[0]]
+    for packet in packets:
+        if IP in packet:
+            packet[IP].tos = (
+                0x10  # receiver-side identification, not a detector feature
+            )
+    if _active_truth is not None:
+        now = time.time()
+        _active_truth.first_send = _active_truth.first_send or now
+    result = scapy_send(*args, **kwargs)
+    if _active_truth is not None:
+        _active_truth.last_send = time.time()
+        _active_truth.sent += len(packets)
+    return result
+
+
 class GroundTruth:
     """Context manager writing the start and end markers for one attack."""
 
@@ -42,8 +64,14 @@ class GroundTruth:
         self.targets = list(targets or [])
         self.note = note
         self.t_start = None
+        self.first_send = None
+        self.last_send = None
+        self.sent = 0
+        self.attack_id = uuid.uuid4().hex
 
     def __enter__(self):
+        global _active_truth
+        _active_truth = self
         self.t_start = time.time()
         return self
 
@@ -52,9 +80,16 @@ class GroundTruth:
             self.targets.append(target)
 
     def __exit__(self, exc_type, exc, tb):
+        global _active_truth
+        _active_truth = None
         write_truth_marker(
             self.path,
             {
+                "schema_version": 2,
+                "attack_id": self.attack_id,
+                "first_send": self.first_send,
+                "last_send": self.last_send,
+                "sent": self.sent,
                 "attack_class": self.attack_class,
                 "src": self.src,
                 "targets": self.targets,
@@ -68,7 +103,7 @@ class GroundTruth:
 
 
 def seeded(seed):
-    """Seed the RNG so a trial can be reproduced exactly."""
+    """Seed the intended workload; live scheduling remains nondeterministic."""
     if seed is not None:
         random.seed(seed)
 

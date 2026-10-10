@@ -36,8 +36,9 @@ LATERAL_NEW_NEIGHBOUR_MINIMUM = 0.3
 
 try:
     from networkx.algorithms.community import louvain_communities
+
     _HAS_LOUVAIN = True
-except ImportError:                       # networkx < 3.0
+except ImportError:  # networkx < 3.0
     _HAS_LOUVAIN = False
     from networkx.algorithms.community import greedy_modularity_communities
 
@@ -151,7 +152,7 @@ class GraphDetector:
         an attacker moving through a network.
         """
         if graph.number_of_edges() == 0:
-            return {node: 0 for node in graph.nodes()}
+            return {node: frozenset() for node in graph.nodes()}
 
         try:
             if _HAS_LOUVAIN:
@@ -161,12 +162,12 @@ class GraphDetector:
         except Exception:
             # Community detection is a nice-to-have; its failure must not take
             # the whole detector down mid-run.
-            return {node: 0 for node in graph.nodes()}
+            return {node: frozenset() for node in graph.nodes()}
 
         membership = {}
         for community_id, members in enumerate(groups):
             for node in members:
-                membership[node] = community_id
+                membership[node] = frozenset(members) - {node}
         return membership
 
     # ------------------------------------------------------------------
@@ -216,13 +217,18 @@ class GraphDetector:
                     src_ip=host,
                     ts=window.end,
                     window_index=window.index,
-                    severity=SEVERITY_HIGH if score > 2 * self.cfg.GRAPH_SCORE_THRESHOLD
-                    else SEVERITY_MEDIUM,
+                    severity=(
+                        SEVERITY_HIGH
+                        if score > 2 * self.cfg.GRAPH_SCORE_THRESHOLD
+                        else SEVERITY_MEDIUM
+                    ),
                     score=score,
                     reason=self._explain(features, contributions, changed),
                     evidence={
                         "degree": features["degree"],
-                        "new_neighbour_ratio": round(features["new_neighbour_ratio"], 3),
+                        "new_neighbour_ratio": round(
+                            features["new_neighbour_ratio"], 3
+                        ),
                         "new_neighbours": new_neighbours,
                         "port_diversity": features["port_diversity"],
                         "betweenness": round(features["betweenness"], 4),
@@ -293,7 +299,9 @@ class GraphDetector:
             elif feature == "degree":
                 parts.append("contacted %d hosts" % int(features.get("degree", 0)))
             elif feature == "port_diversity":
-                parts.append("used %d distinct ports" % int(features.get("port_diversity", 0)))
+                parts.append(
+                    "used %d distinct ports" % int(features.get("port_diversity", 0))
+                )
             elif feature == "community_change" and community_changed:
                 parts.append("moved between host communities")
             elif feature == "betweenness":

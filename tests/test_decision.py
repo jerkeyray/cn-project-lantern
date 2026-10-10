@@ -24,8 +24,15 @@ from lantern.decision import (
 )
 
 
-def alert(detector=DETECTOR_BASELINE, attack_class=CLASS_PORTSCAN,
-          src="10.0.0.4", dst=None, ts=0.0, port=None, protocol=None):
+def alert(
+    detector=DETECTOR_BASELINE,
+    attack_class=CLASS_PORTSCAN,
+    src="10.0.0.4",
+    dst=None,
+    ts=0.0,
+    port=None,
+    protocol=None,
+):
     return Alert(
         detector=detector,
         attack_class=attack_class,
@@ -104,8 +111,12 @@ class TestCooldown:
             [
                 alert(detector=DETECTOR_BASELINE, attack_class=CLASS_PORTSCAN, ts=0.0),
                 alert(detector=DETECTOR_GRAPH, attack_class=CLASS_LATERAL, ts=0.0),
-                alert(detector=DETECTOR_BASELINE, attack_class=CLASS_BRUTEFORCE,
-                      dst="10.0.0.5", ts=0.0),
+                alert(
+                    detector=DETECTOR_BASELINE,
+                    attack_class=CLASS_BRUTEFORCE,
+                    dst="10.0.0.5",
+                    ts=0.0,
+                ),
             ]
         )
         assert len(decisions) == 3
@@ -141,7 +152,14 @@ class TestActionChoice:
         """
         manager = AlertManager(mitigator="baseline")
         decision = manager.submit(
-            [alert(attack_class=CLASS_BRUTEFORCE, dst="10.0.0.5", port=22,
-                   protocol=6, ts=0.0)]
+            [
+                alert(
+                    attack_class=CLASS_BRUTEFORCE,
+                    dst="10.0.0.5",
+                    port=22,
+                    protocol=6,
+                    ts=0.0,
+                )
+            ]
         )[0]
         assert decision.action == ACTION_DROP_PAIR

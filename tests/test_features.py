@@ -18,7 +18,10 @@ class TestFlowStatsDiffer:
     def test_subsequent_observations_are_differenced(self):
         differ = FlowStatsDiffer()
         differ.diff(1, "flow-a", packets=10, bytes_=640, duration=1.0)
-        assert differ.diff(1, "flow-a", packets=25, bytes_=1600, duration=2.0) == (15, 960)
+        assert differ.diff(1, "flow-a", packets=25, bytes_=1600, duration=2.0) == (
+            15,
+            960,
+        )
 
     def test_evicted_and_recreated_entry_does_not_go_negative(self):
         """An idle-timed-out entry that reappears restarts its counters at zero.
@@ -92,8 +95,14 @@ class TestWindowAggregator:
     def test_syns_to_auth_ports_are_counted(self, make_window):
         window = make_window(
             [
-                record("10.0.0.4", "10.0.0.5", ts=float(i) * 0.1, port=22,
-                       flags=TCP_SYN, src_port=40000 + i)
+                record(
+                    "10.0.0.4",
+                    "10.0.0.5",
+                    ts=float(i) * 0.1,
+                    port=22,
+                    flags=TCP_SYN,
+                    src_port=40000 + i,
+                )
                 for i in range(30)
             ]
         )

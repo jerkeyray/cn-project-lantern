@@ -18,11 +18,10 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, "/opt/lantern")
 
 from lantern import config  # noqa: E402
 
-REPO_ROOT = "/opt/lantern"
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def wait_for_port(port, host="127.0.0.1", timeout=30.0):
@@ -61,7 +60,8 @@ class Controller:
         os.makedirs(os.path.dirname(self.log_path) or ".", exist_ok=True)
         command = [
             "ryu-manager",
-            "--ofp-tcp-listen-port", str(self.port),
+            "--ofp-tcp-listen-port",
+            str(self.port),
             "lantern/app.py",
         ]
         environment = dict(
@@ -127,6 +127,8 @@ class Workload:
         self.trial = trial
         self.processes = []
         self._log_handles = []
+        self.attack_process = None
+        self.controller = None
 
     # The attacker host runs normal traffic too, and that is not an oversight.
     #
@@ -138,19 +140,38 @@ class Workload:
     # act on the network is to contact five machines needs no graph to spot.
     DEFAULT_NORMAL_HOSTS = list(config.WORKSTATIONS) + [config.ATTACKER]
 
-    def start_normal(self, duration, rate=1.5, hosts=None, seed=None):
+    def start_normal(
+        self,
+        duration,
+        rate=1.5,
+        hosts=None,
+        seed=None,
+        peer_after=None,
+        rate_switch_after=None,
+    ):
         """Start the background client-server workload."""
         hosts = hosts or self.DEFAULT_NORMAL_HOSTS
         for index, name in enumerate(hosts):
             host = self.net.get(name)
             command = [
-                "python3", "traffic/normal.py",
-                "--src", config.HOST_TO_IP[name],
-                "--duration", str(duration),
-                "--rate", str(rate),
-                "--case", self.case,
-                "--trial", str(self.trial),
+                "python3",
+                "-m",
+                "traffic.normal",
+                "--src",
+                config.HOST_TO_IP[name],
+                "--duration",
+                str(duration),
+                "--rate",
+                str(rate),
+                "--case",
+                self.case,
+                "--trial",
+                str(self.trial),
             ]
+            if peer_after is not None:
+                command += ["--peer-after", str(peer_after)]
+            if rate_switch_after is not None:
+                command += ["--rate-switch-after", str(rate_switch_after)]
             if seed is not None:
                 command += ["--seed", str(seed + index)]
             # Redirected to a file rather than discarded: a background traffic
@@ -165,8 +186,9 @@ class Workload:
             handle = open(log_path, "w", buffering=1)
             self._log_handles.append(handle)
             self.processes.append(
-                host.popen(command, cwd=REPO_ROOT, stdout=handle,
-                           stderr=subprocess.STDOUT)
+                host.popen(
+                    command, cwd=REPO_ROOT, stdout=handle, stderr=subprocess.STDOUT
+                )
             )
         return self
 
@@ -174,21 +196,85 @@ class Workload:
         """Run one attack script to completion in its host's namespace."""
         host = self.net.get(host_name or config.ATTACKER)
         command = [
-            "python3", module,
-            "--case", self.case,
-            "--trial", str(self.trial),
-            "--src", config.HOST_TO_IP[host_name or config.ATTACKER],
+            "python3",
+            "-m",
+            module[:-3].replace("/", "."),
+            "--case",
+            self.case,
+            "--trial",
+            str(self.trial),
+            "--src",
+            config.HOST_TO_IP[host_name or config.ATTACKER],
         ] + list(extra_args or [])
 
-        process = host.popen(command, cwd=REPO_ROOT, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT)
+        process = host.popen(
+            command, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+        )
+        self.attack_process = process
+        while process.poll() is None:
+            self.assert_alive()
+            time.sleep(0.5)
         output, _ = process.communicate()
         if output:
             for line in output.decode("utf-8", "replace").splitlines():
                 print("    [%s] %s" % (os.path.basename(module), line))
         return process.returncode
 
+    def assert_alive(self):
+        if self.controller and self.controller.process.poll() is not None:
+            raise RuntimeError("controller exited during attack")
+        dead = [p.returncode for p in self.processes if p.poll() is not None]
+        if dead:
+            raise RuntimeError("background process exited prematurely: %r" % dead)
+
+    def start_measurements(self):
+        prefix = os.path.join(
+            config.RESULTS_RAW_DIR, "%s_trial%02d" % (self.case, self.trial)
+        )
+        for name, (ip, _, _, _) in config.HOSTS.items():
+            host = self.net.get(name)
+            for command in (
+                ["python3", "-m", "traffic.service"],
+                [
+                    "python3",
+                    "-m",
+                    "traffic.observe",
+                    "--ip",
+                    ip,
+                    "--output",
+                    prefix + "_receiver_" + name + ".jsonl",
+                ],
+            ):
+                handle = open(prefix + "_" + name + "_" + command[2] + ".log", "w")
+                self._log_handles.append(handle)
+                self.processes.append(
+                    host.popen(command, cwd=REPO_ROOT, stdout=handle, stderr=handle)
+                )
+        time.sleep(2)
+        for name in self.DEFAULT_NORMAL_HOSTS:
+            command = [
+                "python3",
+                "-m",
+                "traffic.probe",
+                "--source",
+                config.HOST_TO_IP[name],
+                "--target",
+                config.HOST_TO_IP[config.APP_SERVER],
+                "--output",
+                prefix + "_probe_" + name + ".jsonl",
+            ]
+            handle = open(prefix + "_probe_" + name + ".log", "w")
+            self._log_handles.append(handle)
+            self.processes.append(
+                self.net.get(name).popen(
+                    command, cwd=REPO_ROOT, stdout=handle, stderr=handle
+                )
+            )
+
     def stop(self):
+        if self.attack_process is not None and self.attack_process.poll() is None:
+            self.attack_process.kill()
+            self.attack_process.wait()
         for process in self.processes:
             try:
                 if process.poll() is None:

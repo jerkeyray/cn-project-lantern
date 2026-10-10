@@ -11,3 +11,17 @@ results/raw/
 results/tables/
 results/figs/
 !results/.gitkeep
+
+# Local tools, scratch output, and uncurated campaigns.
+.DS_Store
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+*.pcap
+*.pcapng
+results/campaigns/
+results/analysis/
+output/
+tmp/

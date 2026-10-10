@@ -1,69 +1,40 @@
-# Lantern — Graph-Based SDN Controller-Integrated IDS
-#
-# Every target runs inside the container; nothing in this project runs natively
-# on macOS (no Mininet, no Open vSwitch, no Python 3.8).
+IMAGE ?= lantern-sdn-ids
+CASE ?= C5
+CAMPAIGN ?=
+DOCKER_READ = docker run --rm --network none -v "$(CURDIR):/opt/lantern" --entrypoint python3 $(IMAGE)
+DOCKER_NET = docker run --rm --privileged --network none -v "$(CURDIR):/opt/lantern" $(IMAGE)
 
-IMAGE   := lantern-sdn-ids
-CASE    ?= C1
-TRIALS  ?= 1
-
-# --privileged is required: Mininet creates network namespaces and veth pairs,
-# and ovs-vswitchd needs to manipulate interfaces.
-#
-# --network none is deliberate: the experiment must not be able to reach, or be
-# reached from, anything outside the container.
-#
-# No TTY is allocated for batch targets -- `docker run -it` fails outright when
-# stdin is not a terminal, which would make `make test` unusable from a script
-# or from CI. Only `make shell` asks for one.
-DOCKER_BASE := docker run --rm --privileged \
-	--network none \
-	-v $(PWD):/opt/lantern \
-	$(IMAGE)
-
-DOCKER_RUN := $(DOCKER_BASE)
-DOCKER_INTERACTIVE := docker run --rm -it --privileged \
-	--network none \
-	-v $(PWD):/opt/lantern \
-	$(IMAGE)
-
-.PHONY: build shell test datapath-check run-case run-all plan analyze clean clean-mn
-
+.PHONY: build test validate datapath-check integration plan pilot calibrate evaluate campaign analyze verify package clean clean-campaign run-case
 build:
 	docker build -f docker/Dockerfile -t $(IMAGE) .
-
-shell: build
-	$(DOCKER_INTERACTIVE) bash
-
-## Unit tests only — no Mininet, no root networking, runs in seconds.
-test: build
-	$(DOCKER_RUN) python3 -m pytest tests/ -v
-
-## Verification gate 1: does the userspace datapath work under this kernel?
-datapath-check: build
-	$(DOCKER_RUN) python3 topo/lantern_topo.py --self-test
-
-run-case: build
-	$(DOCKER_RUN) python3 experiments/run_case.py --case $(CASE) --trials $(TRIALS)
-
-## The sweep driver runs on the HOST, not inside a container: it gives every
-## run its own fresh container. Looping inside one container degrades after a
-## few dozen Mininet start/stops and silently starves later runs.
-run-all: build
-	bash scripts/run_sweep.sh --trials $(TRIALS)
-
-## Print the plan and a time estimate without running anything.
-plan: build
-	$(DOCKER_RUN) python3 experiments/run_all.py --dry-run --trials $(TRIALS)
-
-analyze: build
-	$(DOCKER_RUN) python3 experiments/analyze.py
-
-## Clean up a wedged Mininet state inside a container (rarely needed since
-## containers are --rm, but useful when shelled in).
-clean-mn:
-	$(DOCKER_RUN) mn -c
-
+test:
+	$(DOCKER_READ) -m pytest tests/ -q -p no:cacheprovider
+validate: test
+	bash -n scripts/run_sweep.sh docker/entrypoint.sh
+	docker run --rm --network none -v "$(CURDIR):/opt/lantern:ro" --entrypoint python3 $(IMAGE) -m experiments.run_all --trials 5 > /dev/null
+datapath-check:
+	$(DOCKER_NET) python3 -m topo.lantern_topo --self-test
+integration:
+	$(DOCKER_NET) python3 -m experiments.integration
+plan:
+	python3 -m experiments.run_all
+campaign:
+	@test -n "$(CAMPAIGN)" || (echo 'Set CAMPAIGN=results/campaigns/unique-name'; exit 1)
+	python3 -m experiments.campaign all --campaign "$(CAMPAIGN)"
+pilot calibrate evaluate:
+	@test -n "$(CAMPAIGN)" || (echo 'Set CAMPAIGN=results/campaigns/unique-name'; exit 1)
+	python3 -m experiments.campaign $(if $(filter calibrate,$@),calibrate,$@) --campaign "$(CAMPAIGN)"
+analyze:
+	@test -n "$(CAMPAIGN)" || (echo 'Set CAMPAIGN'; exit 1)
+	$(DOCKER_READ) -m experiments.analyze --raw "$(CAMPAIGN)" --output "$(CAMPAIGN)/tables"
+verify:
+	$(DOCKER_READ) -m experiments.package verify
+package:
+	$(DOCKER_READ) -m experiments.package archive
+run-case:
+	$(DOCKER_NET) python3 -m experiments.run_case --case $(CASE)
 clean:
-	rm -rf results/raw/* results/tables/* results/figs/*
-	find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+	python3 -c "import pathlib,shutil; [shutil.rmtree(p) for p in pathlib.Path('.').rglob('__pycache__') if '.git' not in p.parts]; shutil.rmtree('.pytest_cache',ignore_errors=True)"
+clean-campaign:
+	@test -n "$(CAMPAIGN)" || (echo 'Set an explicit disposable CAMPAIGN path'; exit 1)
+	python3 -c "from pathlib import Path; import shutil; p=Path('$(CAMPAIGN)').resolve(); root=Path('results/campaigns').resolve(); assert root in p.parents, 'Only results/campaigns children may be deleted'; shutil.rmtree(p)"

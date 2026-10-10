@@ -10,6 +10,9 @@ race rather than the detectors. Detection-comparison runs therefore use
 mitigator mode "none": both detectors score, neither blocks.
 """
 
+import time
+import uuid
+
 from lantern import config
 from lantern.alerts import (
     CLASS_BRUTEFORCE,
@@ -30,10 +33,13 @@ class Decision:
     """An alert plus what should be done about it."""
 
     def __init__(self, alert, action, reason, actuate):
+        self.decision_id = uuid.uuid4().hex
+        self.decided_mono = time.monotonic()
+        self.decided_wall = time.time()
         self.alert = alert
         self.action = action
         self.reason = reason
-        self.actuate = actuate   # False => recorded for analysis, not installed
+        self.actuate = actuate  # False => recorded for analysis, not installed
 
     def to_dict(self):
         return {
@@ -58,7 +64,7 @@ class AlertManager:
         self.clock = clock
         self.on_decision = on_decision
 
-        self._last_alert_at = {}      # dedupe_key -> ts
+        self._last_alert_at = {}  # dedupe_key -> ts
         self.suppressed_count = 0
         self.alert_count = 0
 
@@ -129,7 +135,10 @@ class AlertManager:
                     ACTION_DROP_PAIR,
                     "pair block: the attack names a specific victim",
                 )
-            return (ACTION_DROP_SOURCE, "source-wide block: no specific victim identified")
+            return (
+                ACTION_DROP_SOURCE,
+                "source-wide block: no specific victim identified",
+            )
 
         if alert.attack_class == CLASS_GRAPH_ANOMALY:
             # The graph detector saw a host's communication structure change

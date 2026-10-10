@@ -9,12 +9,18 @@ out how much traffic Mininet can carry.
 import sys
 import time
 
-sys.path.insert(0, "/opt/lantern")
 
-from scapy.all import IP, TCP, RandShort, send  # noqa: E402
+from scapy.all import IP, TCP, RandShort  # noqa: E402
+
+from traffic.common import send
 
 from lantern import config  # noqa: E402
-from traffic.common import GroundTruth, attack_parser, resolve_source, seeded  # noqa: E402
+from traffic.common import (
+    GroundTruth,
+    attack_parser,
+    resolve_source,
+    seeded,
+)  # noqa: E402
 
 
 def run(src_ip, target_ip, target_port, duration, pps, verbose=False):
@@ -48,20 +54,32 @@ def main():
     parser = attack_parser(__doc__)
     parser.add_argument("--target", default=None)
     parser.add_argument("--port", type=int, default=80)
-    parser.add_argument("--pps", type=float, default=config.DOS_PPS * 3,
-                        help="target packets per second")
+    parser.add_argument(
+        "--pps",
+        type=float,
+        default=config.DOS_PPS * 3,
+        help="target packets per second",
+    )
     args = parser.parse_args()
     seeded(args.seed)
 
     src_ip = resolve_source(args)
     target_ip = args.target or config.HOST_TO_IP[config.APP_SERVER]
 
-    with GroundTruth("dos", args.case, args.trial, src_ip, targets=[target_ip],
-                     note="TCP SYN flood at ~%.0f pps" % args.pps):
+    with GroundTruth(
+        "dos",
+        args.case,
+        args.trial,
+        src_ip,
+        targets=[target_ip],
+        note="TCP SYN flood at ~%.0f pps" % args.pps,
+    ):
         sent, achieved = run(src_ip, target_ip, args.port, args.duration, args.pps)
 
-    print("dos: %s -> %s:%d, %d packets, %.0f pps achieved"
-          % (src_ip, target_ip, args.port, sent, achieved))
+    print(
+        "dos: %s -> %s:%d, %d packets, %.0f pps achieved"
+        % (src_ip, target_ip, args.port, sent, achieved)
+    )
 
 
 if __name__ == "__main__":

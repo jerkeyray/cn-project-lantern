@@ -18,12 +18,12 @@ SUBNET = "10.0.0.0/24"
 
 HOSTS = {
     # name:     (ip,           mac,                 switch, role)
-    "h1":       ("10.0.0.1",   "00:00:00:00:00:01", "s1", "workstation"),
-    "h2":       ("10.0.0.2",   "00:00:00:00:00:02", "s1", "workstation"),
-    "h3":       ("10.0.0.3",   "00:00:00:00:00:03", "s1", "workstation"),
-    "h4":       ("10.0.0.4",   "00:00:00:00:00:04", "s2", "attacker"),
-    "h5":       ("10.0.0.5",   "00:00:00:00:00:05", "s2", "auth_server"),
-    "server":   ("10.0.0.10",  "00:00:00:00:00:10", "s2", "app_server"),
+    "h1": ("10.0.0.1", "00:00:00:00:00:01", "s1", "workstation"),
+    "h2": ("10.0.0.2", "00:00:00:00:00:02", "s1", "workstation"),
+    "h3": ("10.0.0.3", "00:00:00:00:00:03", "s1", "workstation"),
+    "h4": ("10.0.0.4", "00:00:00:00:00:04", "s2", "attacker"),
+    "h5": ("10.0.0.5", "00:00:00:00:00:05", "s2", "auth_server"),
+    "server": ("10.0.0.10", "00:00:00:00:00:10", "s2", "app_server"),
 }
 
 SWITCHES = ["s1", "s2"]
@@ -101,16 +101,17 @@ PROFILE_ALPHA = 0.2
 # degree at all.
 MIN_SIGMA_DEFAULT = 0.5
 MIN_SIGMA_BY_FEATURE = {
-    "degree": 0.5,              # whole hosts
-    "weighted_degree": 5.0,     # packet counts; naturally noisy
+    "degree": 0.5,  # whole hosts
+    "weighted_degree": 5.0,  # packet counts; naturally noisy
     "new_neighbour_ratio": 0.1,  # a fraction in [0, 1]
-    "port_diversity": 0.5,      # whole ports
-    "betweenness": 0.05,        # normalised centrality, typically << 1
+    "port_diversity": 0.5,  # whole ports
+    "betweenness": 0.05,  # normalised centrality, typically << 1
 }
 
 
 def min_sigma(feature):
     return MIN_SIGMA_BY_FEATURE.get(feature, MIN_SIGMA_DEFAULT)
+
 
 # z-scores are clamped so that one wild feature cannot single-handedly dominate
 # the aggregate score S(h,t).
@@ -167,3 +168,25 @@ RESOURCE_SAMPLE_INTERVAL = 1.0  # seconds between psutil samples of the controll
 RESULTS_RAW_DIR = "results/raw"
 RESULTS_TABLES_DIR = "results/tables"
 RESULTS_FIGS_DIR = "results/figs"
+
+# Campaign paths and a frozen, calibration-derived threshold override.
+import json as _json
+import os as _os
+
+RESULTS_RAW_DIR = _os.environ.get("LANTERN_RAW", RESULTS_RAW_DIR)
+_THRESHOLD_KEYS = {
+    "PORTSCAN_PORTS",
+    "PORTSCAN_HOSTS",
+    "DOS_PPS",
+    "BRUTEFORCE_ATTEMPTS",
+    "GRAPH_SCORE_THRESHOLD",
+}
+if _os.environ.get("LANTERN_CONFIG"):
+    with open(_os.environ["LANTERN_CONFIG"]) as _handle:
+        _overrides = _json.load(_handle)
+    if set(_overrides) - _THRESHOLD_KEYS:
+        raise ValueError("unsupported threshold override")
+    for _key, _value in _overrides.items():
+        if not isinstance(_value, (int, float)) or not 0 < _value < float("inf"):
+            raise ValueError("threshold must be finite and positive")
+        globals()[_key] = _value
