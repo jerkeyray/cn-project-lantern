@@ -288,43 +288,82 @@ def calibrate(directory):
     print("frozen thresholds: " + json.dumps(thresholds), flush=True)
 
 
+def import_thresholds(directory, source):
+    """Reuse pre-existing normal-only calibration without tuning on new attacks."""
+    from experiments.package import hashes
+    source = Path(source).resolve()
+    checksum_path = source / "checksums.json"
+    if checksum_path.exists() and hashes(source) != json.loads(checksum_path.read_text()):
+        raise RuntimeError("calibration source evidence checksum mismatch")
+    thresholds = source / "thresholds.json"
+    checksum = hashlib.sha256(thresholds.read_bytes()).hexdigest()
+    if checksum != (source / "thresholds.sha256").read_text().strip():
+        raise RuntimeError("imported threshold checksum mismatch")
+    expected = {"PORTSCAN_PORTS", "PORTSCAN_HOSTS", "DOS_PPS",
+                "BRUTEFORCE_ATTEMPTS", "GRAPH_SCORE_THRESHOLD"}
+    values = json.loads(thresholds.read_text())
+    if set(values) != expected or any(not isinstance(v, (int, float)) or v <= 0 for v in values.values()):
+        raise ValueError("invalid imported detector thresholds")
+    import shutil
+    for name in ("thresholds.json", "thresholds.sha256", "calibration.json"):
+        destination = directory / name
+        if destination.exists():
+            raise FileExistsError(destination)
+        shutil.copyfile(source / name, destination)
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["measurement_protocol_version"] = 2
+    manifest["calibration_provenance"] = dict(
+        mode="reused", source=source.name, threshold_sha256=checksum,
+        calibration_sha256=hashlib.sha256((source / "calibration.json").read_bytes()).hexdigest(),
+        source_hash=json.loads((source / "manifest.json").read_text())["source_hash"],
+    )
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+
+
+def pilot_matrix():
+    return [dict(case=case, phase="pilot", mitigator=mode, trial=1,
+                 seed=9101, warmup=WARMUP_SECONDS, label="pilot-%s-%s" % (case, mode))
+            for case in ("C2", "C3", "C4", "C5") for mode in ("none", "baseline", "graph")]
+
+
 def main():
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument(
         "action", choices=["create", "pilot", "calibrate", "evaluate", "all", "verify"]
     )
     parser.add_argument("--campaign", required=True)
+    parser.add_argument("--thresholds-from", type=Path, help="reuse a verified calibration directory")
     args = parser.parse_args()
     directory = (ROOT / args.campaign).resolve()
     if ROOT not in directory.parents:
         raise ValueError("campaign must be inside the checkout")
     if args.action in ("create", "all"):
         create(directory)
+        if args.thresholds_from:
+            import_thresholds(directory, args.thresholds_from)
     if args.action == "verify":
         print(json.dumps(verify_source(directory), indent=2))
+    if args.action == "all" and not args.thresholds_from:
+        calibrate(directory)
     if args.action in ("pilot", "all"):
-        records = execute(
-            directory,
-            [
-                dict(
-                    case="C5",
-                    phase="pilot",
-                    mitigator="graph",
-                    trial=1,
-                    seed=9101,
-                    warmup=WARMUP_SECONDS,
-                    label="pilot-C5-graph",
-                )
-            ],
-        )
-        duration = records[-1]["seconds"] if records else None
-        if duration:
-            print(
-                "Measured pilot %.1fs; 95 evaluation runs approximately %.1f hours (mixed cases take longer)."
-                % (duration, duration * 95 / 3600),
-                flush=True,
-            )
-    if args.action in ("calibrate", "all"):
+        frozen = directory / "thresholds.json"
+        if not frozen.exists():
+            raise RuntimeError("pilot requires frozen thresholds; import or calibrate first")
+        records = execute(directory, pilot_matrix(), frozen)
+        if records:
+            duration = sum(r["seconds"] for r in records) / len(records)
+            print("Measured pilot mean %.1fs; evaluation at least %.1f hours plus mixed-case time."
+                  % (duration, duration * 95 / 3600), flush=True)
+        from experiments.analyze import discover_runs, score_run
+        for run in discover_runs(directory / "pilot"):
+            result = score_run(run)
+            for row in result["containment"]:
+                if row.get("blocking_outcome") in (
+                    "insufficient_post_confirmation_traffic", "unavailable_receiver_evidence"
+                ):
+                    raise RuntimeError("pilot cannot measure blocking: " + str(row))
+    if args.action == "calibrate":
         calibrate(directory)
     if args.action in ("evaluate", "all"):
         frozen = directory / "thresholds.json"

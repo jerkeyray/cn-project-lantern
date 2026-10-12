@@ -60,6 +60,7 @@ def run_trial(
         mitigator=mitigator,
         seed=seed,
         phase=phase,
+        measurement_protocol_version=2,
         reverse=reverse,
         benign=benign,
         warmup=warmup,

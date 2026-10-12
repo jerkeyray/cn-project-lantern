@@ -1,4 +1,17 @@
-# Final evaluation results
+# Historical evaluation results
+
+**Measurement correction:** Receiver capture selected loopback and every receiver
+count was zero, including mitigation-disabled runs. Historical blocking verdicts
+are counter-based evidence only; receiver delivery and full containment are
+unavailable. Of 30 baseline mitigation records, 15 confirmations were too late
+for the three-second test, five lacked confirmation, and ten lateral records
+were testable. Ten graph lateral records had positive matching rule counters;
+this does not independently prove that all attack packets were stopped.
+
+Both detectors identified all primary lateral sources. The graph improved
+class-exact labeling, not attacker-identification coverage. A repaired campaign
+uses healthy explicit-interface captures and longer scan/retry/flood workloads.
+The frozen evidence and CSVs below retain their original historical values.
 
 The selected campaign is `results/campaigns/submission-20260922-v2`. Its
 implementation and configuration were frozen before calibration. The campaign
@@ -53,8 +66,8 @@ operational alert counts are retained separately in
 The 50 mitigation trials separately actuated the baseline or graph for C2--C6.
 Rule confirmation and observed blocking are different measures. The baseline
 had correlated switch confirmation for 25 of 30 attack records, but none met
-the receiver-plus-drop-counter blocking criterion. The graph had correlated
-confirmation and observed blocking for 10 of 30 attack records; the remaining
+the historical timing-and-counter criterion. The graph had correlated
+confirmation and positive matching counters during ongoing attacks for 10 of 30 attack records; the remaining
 records are reported as unverified rather than credited. For confirmed records,
 the graph's rule-confirmation delay had mean 8.78 seconds (range 8.75--8.81).
 The baseline's confirmed-record mean was 10.88 seconds (range 8.75--19.28).
@@ -99,3 +112,32 @@ patterns and accidental machine-local paths before packaging.
 The allowlisted archive is generated with `make package`. Its extracted source
 is checked with `make build`, `make validate`, and `make verify`; these commands
 require Docker and do not require the original development directory.
+
+## Repaired evaluation: 12 October 2026
+
+The separate protocol-2 campaign completed all 95 conditions after 12 healthy
+pilots, with no invalid attempts. Its calibration was imported unchanged from
+the historical submission. All 570 receiver capture health checks passed.
+The [new report](../submission-repaired-20261012-results.md) and
+[blocking table](../submission-repaired-20261012/tables/blocking_summary.csv)
+are the authoritative repaired results.
+
+Both detectors identified the lateral source in 5/5 primary trials; graph
+labels were correct in 5/5 and baseline labels in 0/5. Across C5/C6, graph
+blocking verified in 9/10 lateral records, with one lacking increasing counter
+evidence; all ten baseline lateral records showed receiver leakage. Overall
+blocking verified in 15/30 baseline records (15/25 testable) and 9/30 graph
+records (9/10 testable). Baseline blocking verified in every primary scan,
+flood, and SYN-retry mitigation trial. The graph confirmed no rules for these
+classes. The graph is therefore useful for this lateral simulation, while
+the baseline covers more attack classes.
+
+Innocent attack-period HTTP delivery was 1476/1476 for each actuator. Recovery
+delivery was 1691/1692 for baseline and 1687/1690 for graph; those failures
+remain in the results. Changed benign traffic triggered 31/297 baseline and
+16/297 graph host-windows. Detection-only controller CPU averaged 3.838%,
+RSS 73.676 MiB, and detector compute 0.148 ms baseline versus 1.636 ms graph.
+
+All curated checksums and CSVs reproduce from raw evidence. Historical tables
+and preliminary pilot evidence remain separate. The repaired replay uses new
+measurements; it does not inherit historical blocking or delivery claims.

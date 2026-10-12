@@ -106,3 +106,29 @@ volume; thresholds and comparisons refer to this shared observation pipeline.
 Synthetic brute force and lateral movement model communication patterns only.
 The normal workload is narrow, and robustness checks do not establish production
 accuracy, multi-controller scalability, or adversarial robustness.
+
+## Repaired measurement protocol (version 2)
+
+New runs explicitly bind each receiver to its host interface, record sniffer
+readiness, and require five separately marked diagnostic packets at every host
+before warmup. Diagnostics do not enter attack counts or ground truth. Missing
+capture readiness or health invalidates a run regardless of detector outcomes.
+
+Scan and authentication-port SYN generators optionally repeat for a fixed
+send duration. Evaluation uses 40 seconds for scan, SYN retry, and flood in
+all conditions; lateral pacing remains unchanged. Detector settings and the
+existing normal-only calibration are reused with recorded checksums and origin.
+Longer workloads can change detection outcomes; report this as a new campaign.
+
+Blocking analysis requires healthy receiver evidence, correlated switch
+confirmation, at least three seconds of remaining malicious sending, matching
+counter increases, and stable attack counts at all targets across two or more
+samples after a one-second settling allowance. Report observed leakage, absent
+confirmation, insufficient ongoing traffic, unavailable capture, and absent
+counter increases explicitly. All attacks remain in overall denominators;
+report testable records separately. Source-wide counters include legitimate
+source traffic; counter increases alone cannot prove attack containment.
+
+Historical CSV regeneration keeps its original protocol unchanged. Its
+"verified" records must be presented as counter-based outcomes with receiver
+delivery unavailable, because every historical capture selected loopback.

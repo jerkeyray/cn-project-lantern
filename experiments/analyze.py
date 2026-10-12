@@ -154,6 +154,62 @@ def decision_timings(events):
     return rows
 
 
+def blocking_assessment(truth, confirm, cookies, events, receivers):
+    """Protocol 2 verdict; legacy campaign CSVs retain their original analysis."""
+    from experiments.validation import receiver_healthy
+
+    targets = truth.get("targets", [])
+    healthy = bool(targets) and all(
+        receiver_healthy([e for e in receivers if e.get("dst") == target])
+        for target in targets
+    )
+    end = attack_interval(truth)[1]
+    remaining = end - confirm if confirm is not None else None
+    result = dict(receiver_evidence_available=healthy,
+                  post_confirmation_seconds=remaining, testable=False,
+                  drop_counter_increased=False, blocking_outcome="no_confirmation")
+    if confirm is None:
+        return result
+    if remaining < 3:
+        result["blocking_outcome"] = "insufficient_post_confirmation_traffic"
+        return result
+    if not healthy:
+        result["blocking_outcome"] = "unavailable_receiver_evidence"
+        return result
+    observations = [[e for e in receivers if e.get("dst") == target
+                     and confirm + 1 <= e["wall"] <= end]
+                    for target in targets]
+    if any(len(rows) < 2 for rows in observations):
+        result["blocking_outcome"] = "unavailable_receiver_evidence"
+        return result
+    result["testable"] = True
+    counters = {}
+    increased = False
+    for event in sorted(events, key=lambda e: e.get("wall", 0)):
+        if event.get("kind") != "resource_sample" or event["wall"] > end:
+            continue
+        for dpid, table in event.get("flow_tables", {}).items():
+            for drop in table.get("drops", []):
+                if drop["cookie"] not in cookies:
+                    continue
+                key = (dpid, drop["cookie"])
+                count = drop["packets"]
+                if event["wall"] >= confirm and count > counters.get(key, 0):
+                    increased = True
+                counters[key] = count
+    result["drop_counter_increased"] = increased
+    leaking = any(
+        max(e["counts"].get(truth["src"], 0) for e in rows)
+        != min(e["counts"].get(truth["src"], 0) for e in rows)
+        for rows in observations
+    )
+    result["blocking_outcome"] = (
+        "observed_leakage" if leaking else "verified" if increased
+        else "insufficient_drop_evidence"
+    )
+    return result
+
+
 def score_run(run):
     path = Path(run["log"])
     events = read_events(path)
@@ -399,6 +455,15 @@ def score_run(run):
                 observed_blocking="verified" if verified else "unverified",
             )
         )
+        if meta.get("measurement_protocol_version", 1) >= 2:
+            cookies = {e["cookie"] for e in events if e["kind"] == "flowmod_sent"
+                       and e.get("alert_id") in matching_alert_ids}
+            assessment = blocking_assessment(truth, confirm, cookies, events, receivers)
+            containment[-1]["observed_blocking"] = (
+                "verified" if assessment["blocking_outcome"] == "verified" else "unverified"
+            )
+            containment[-1].update(assessment)
+            containment[-1]["measurement_protocol_version"] = 2
     resources = [e for e in events if e["kind"] == "resource_sample"]
     overhead = []
     for period in ["warmup", "evaluation"]:
@@ -544,6 +609,24 @@ def analyze(raw, output):
         "overhead",
     ]:
         write_csv(output / (key + ".csv"), [row for r in valid for row in r[key]])
+    measured = [row for r in valid for row in r["containment"]
+                if row.get("measurement_protocol_version") == 2 and row["phase"] == "mitigation"]
+    if measured:
+        groups = defaultdict(list)
+        for row in measured:
+            groups[(row["mitigator"], row["attack_class"])].append(row)
+            groups[(row["mitigator"], "all")].append(row)
+        write_csv(output / "blocking_summary.csv", [
+            dict(mitigator=key[0], attack_class=key[1], records=len(rows),
+                 testable=sum(r["testable"] for r in rows),
+                 verified=sum(r["blocking_outcome"] == "verified" for r in rows),
+                 observed_leakage=sum(r["blocking_outcome"] == "observed_leakage" for r in rows),
+                 no_confirmation=sum(r["blocking_outcome"] == "no_confirmation" for r in rows),
+                 insufficient_post_confirmation_traffic=sum(r["blocking_outcome"] == "insufficient_post_confirmation_traffic" for r in rows),
+                 unavailable_receiver_evidence=sum(r["blocking_outcome"] == "unavailable_receiver_evidence" for r in rows),
+                 insufficient_drop_evidence=sum(r["blocking_outcome"] == "insufficient_drop_evidence" for r in rows))
+            for key, rows in sorted(groups.items())
+        ])
     coverage = coverage_rows(valid)
     write_csv(output / "coverage.csv", coverage)
     evidence = [

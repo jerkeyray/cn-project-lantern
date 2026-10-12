@@ -39,7 +39,7 @@ CASES = {
     "C2": Case(
         "C2",
         purpose="Test scanning detection",
-        attacks=[(PORTSCAN, ["--delay", "0.05"])],
+        attacks=[(PORTSCAN, ["--delay", "0.05", "--repeat-for", "40"])],
         notes=(
             "A loud TCP SYN sweep. The per-flow baseline should catch this "
             "easily -- that is the point. A comparison the baseline loses "
@@ -49,15 +49,15 @@ CASES = {
     "C3": Case(
         "C3",
         purpose="Test high-rate anomaly detection",
-        attacks=[(DOS, ["--duration", "20", "--pps", "1500"])],
+        attacks=[(DOS, ["--duration", "40", "--pps", "1500"])],
         notes="Volumetric flooding: the attack family nine of the ten recent "
         "surveyed papers target.",
     ),
     "C4": Case(
         "C4",
         purpose="Test repeated failed-connection detection",
-        attacks=[(BRUTEFORCE, ["--attempts", "60"])],
-        notes="Password guessing against the authentication server.",
+        attacks=[(BRUTEFORCE, ["--attempts", "60", "--repeat-for", "40"])],
+        notes="Repeated SYN attempts to an authentication port; no passwords or sessions.",
     ),
     "C5": Case(
         "C5",
@@ -65,8 +65,8 @@ CASES = {
         attacks=[(LATERAL, ["--dwell", "4.0"])],
         notes=(
             "The case the project exists for. Each connection is individually "
-            "unremarkable and the pacing stays below every baseline threshold, "
-            "so only the host-communication structure gives the attacker away."
+            "synthetic; either detector may identify the source. Correct lateral "
+            "classification is assessed separately from source detection."
         ),
     ),
     "C6": Case(
@@ -74,7 +74,7 @@ CASES = {
         purpose="Test legitimate-traffic disruption under realistic conditions",
         attacks=[
             (LATERAL, ["--dwell", "4.0"]),
-            (PORTSCAN, ["--delay", "0.08"]),
+            (PORTSCAN, ["--delay", "0.08", "--repeat-for", "40"]),
         ],
         normal_rate=3.0,
         notes=(
@@ -104,8 +104,8 @@ CASES = {
         # primary evidence.
         attacks=[
             (LATERAL, ["--dwell", "4.0"]),
-            (PORTSCAN, ["--delay", "0.05"]),
-            (BRUTEFORCE, ["--attempts", "60"]),
+            (PORTSCAN, ["--delay", "0.05", "--repeat-for", "40"]),
+            (BRUTEFORCE, ["--attempts", "60", "--repeat-for", "40"]),
         ],
         notes=(
             "Lateral movement, port scan, and SYN retry simulation in one run, with mitigation disabled so that "

@@ -13,6 +13,7 @@ same warmup, attack cases included.
 
 import os
 import signal
+import json
 import socket
 import subprocess
 import sys
@@ -241,6 +242,8 @@ class Workload:
                     "traffic.observe",
                     "--ip",
                     ip,
+                    "--iface",
+                    str(host.defaultIntf()),
                     "--output",
                     prefix + "_receiver_" + name + ".jsonl",
                 ],
@@ -250,7 +253,7 @@ class Workload:
                 self.processes.append(
                     host.popen(command, cwd=REPO_ROOT, stdout=handle, stderr=handle)
                 )
-        time.sleep(2)
+        self.check_receivers(prefix)
         for name in self.DEFAULT_NORMAL_HOSTS:
             command = [
                 "python3",
@@ -270,6 +273,42 @@ class Workload:
                     command, cwd=REPO_ROOT, stdout=handle, stderr=handle
                 )
             )
+
+    def check_receivers(self, prefix):
+        from experiments.validation import read_events, receiver_healthy
+
+        paths = {name: prefix + "_receiver_" + name + ".jsonl" for name in config.HOSTS}
+        deadline = time.monotonic() + 7
+        while True:
+            self.assert_alive()
+            if all(os.path.exists(p) and any(e.get("ready") for e in read_events(p))
+                   for p in paths.values()):
+                break
+            if time.monotonic() >= deadline:
+                raise RuntimeError("receiver readiness timeout")
+            time.sleep(0.1)
+        for name, (ip, _, _, _) in config.HOSTS.items():
+            sender = self.net.get("h1" if name != "h1" else "h2")
+            code = (
+                'from scapy.all import IP, UDP, send; '
+                'send(IP(dst=%r,tos=32)/UDP(dport=29999),count=5,inter=0.02,verbose=False)' % ip
+            )
+            process = sender.popen(["python3", "-c", code], cwd=REPO_ROOT,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            try:
+                output, _ = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise RuntimeError("receiver health sender timeout: " + name)
+            if process.returncode:
+                raise RuntimeError("receiver health sender failed: " + name)
+            deadline = time.monotonic() + 5
+            while not receiver_healthy(read_events(paths[name])):
+                self.assert_alive()
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("receiver did not capture five health packets: " + name)
+                time.sleep(0.1)
 
     def stop(self):
         if self.attack_process is not None and self.attack_process.poll() is None:

@@ -23,16 +23,16 @@ from traffic.common import (
 )  # noqa: E402
 
 
-def run(src_ip, target_ip, port, attempts, delay=0.08, verbose=False):
-    for _ in range(attempts):
+def run(src_ip, target_ip, port, attempts, delay=0.08, verbose=False, repeat_for=None):
+    sent = 0
+    deadline = time.monotonic() + repeat_for if repeat_for is not None else None
+    while (time.monotonic() < deadline if deadline is not None else sent < attempts):
         sport = random.randint(30000, 60000)
-        # Send a SYN and abandon the handshake; no authentication is performed.
-        send(
-            IP(src=src_ip, dst=target_ip) / TCP(sport=sport, dport=port, flags="S"),
-            verbose=verbose,
-        )
+        send(IP(src=src_ip, dst=target_ip) / TCP(sport=sport, dport=port, flags="S"),
+             verbose=verbose)
+        sent += 1
         time.sleep(jitter(delay))
-    return attempts
+    return sent
 
 
 def main():
@@ -41,7 +41,10 @@ def main():
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--attempts", type=int, default=config.BRUTEFORCE_ATTEMPTS * 3)
     parser.add_argument("--delay", type=float, default=0.08)
+    parser.add_argument("--repeat-for", type=float, default=None, help="repeat sending for this many seconds")
     args = parser.parse_args()
+    if args.repeat_for is not None and args.repeat_for <= 0:
+        parser.error("--repeat-for must be positive")
     seeded(args.seed)
 
     src_ip = resolve_source(args)
@@ -53,9 +56,10 @@ def main():
         args.trial,
         src_ip,
         targets=[target_ip],
-        note="%d SYN connection attempts" % args.attempts,
+        note=("repeated SYN connection attempts for %.1f seconds" % args.repeat_for
+              if args.repeat_for is not None else "%d SYN connection attempts" % args.attempts),
     ):
-        attempts = run(src_ip, target_ip, args.port, args.attempts, delay=args.delay)
+        attempts = run(src_ip, target_ip, args.port, args.attempts, delay=args.delay, repeat_for=args.repeat_for)
 
     print(
         "bruteforce: %s -> %s:%d, %d attempts"

@@ -21,3 +21,19 @@
 an explicit path under `results/campaigns/`; curated `submission/` evidence is
 never deleted by cleanup commands. Source changes, commits, and pushes remain
 under the team's control. No repository license has been assigned by automation.
+
+## Repaired campaign
+
+Run `bash scripts/run_repaired_campaign.sh` after `make build`, `make validate`,
+`make datapath-check`, and `make integration`. It imports the historical
+normal-only calibration with its checksum and provenance, runs 12 live pilots,
+and freezes a separate evaluation campaign before running all 95 conditions.
+The source and image must remain unchanged while a campaign runs. Detector
+misses and observed leakage are results; unhealthy capture and insufficient
+post-confirmation pilot traffic stop execution for inspection.
+
+Outputs are separate: `submission-repaired-20261012/`, its generated Markdown
+results report, and `output/lantern-repaired-20261012-replay.zip`. The original
+`submission/` is preserved. Resuming repeats neither successful trials nor
+invalid attempts; the existing two-attempt policy still applies. If pilot
+repairs change source, supply fresh pilot and campaign directory names.

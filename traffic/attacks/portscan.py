@@ -41,16 +41,22 @@ DEFAULT_PORTS = list(range(20, 90)) + [
 ]
 
 
-def run(src_ip, target_ip, ports, delay=0.05, verbose=False):
+def run(src_ip, target_ip, ports, delay=0.05, verbose=False, repeat_for=None):
     scanned = 0
-    for port in ports:
-        send(
-            IP(src=src_ip, dst=target_ip)
-            / TCP(sport=random.randint(30000, 60000), dport=port, flags="S"),
-            verbose=verbose,
-        )
-        scanned += 1
-        time.sleep(jitter(delay))
+    deadline = time.monotonic() + repeat_for if repeat_for is not None else None
+    while True:
+        for port in ports:
+            if deadline is not None and time.monotonic() >= deadline:
+                return scanned
+            send(
+                IP(src=src_ip, dst=target_ip)
+                / TCP(sport=random.randint(30000, 60000), dport=port, flags="S"),
+                verbose=verbose,
+            )
+            scanned += 1
+            time.sleep(jitter(delay))
+        if deadline is None:
+            break
     return scanned
 
 
@@ -58,7 +64,10 @@ def main():
     parser = attack_parser(__doc__)
     parser.add_argument("--target", default=None)
     parser.add_argument("--delay", type=float, default=0.05)
+    parser.add_argument("--repeat-for", type=float, default=None, help="repeat sending for this many seconds")
     args = parser.parse_args()
+    if args.repeat_for is not None and args.repeat_for <= 0:
+        parser.error("--repeat-for must be positive")
     seeded(args.seed)
 
     src_ip = resolve_source(args)
@@ -70,9 +79,11 @@ def main():
         args.trial,
         src_ip,
         targets=[target_ip],
-        note="TCP SYN sweep across %d ports" % len(DEFAULT_PORTS),
+        note=("repeated TCP SYN sweeps across %d ports for %.1f seconds"
+              % (len(DEFAULT_PORTS), args.repeat_for) if args.repeat_for is not None
+              else "TCP SYN sweep across %d ports" % len(DEFAULT_PORTS)),
     ):
-        scanned = run(src_ip, target_ip, DEFAULT_PORTS, delay=args.delay)
+        scanned = run(src_ip, target_ip, DEFAULT_PORTS, delay=args.delay, repeat_for=args.repeat_for)
 
     print("portscan: %s -> %s, %d ports" % (src_ip, target_ip, scanned))
 

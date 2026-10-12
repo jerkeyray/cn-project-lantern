@@ -10,6 +10,12 @@ def read_events(path):
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def receiver_healthy(observations):
+    return any(e.get("ready") and e.get("iface")
+               and sum(e.get("health_counts", {}).values()) == 5
+               for e in observations)
+
+
 def validate_run(log, expected_attacks=0):
     reasons = []
     path = Path(log)
@@ -52,10 +58,18 @@ def validate_run(log, expected_attacks=0):
             p.get("success") for p in read_events(probes)
         ):
             reasons.append("no successful service probe from " + name)
+    meta_path = path.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
     for name in config.HOSTS:
         receiver = path.with_name(path.stem + "_receiver_" + name + ".jsonl")
         if not receiver.exists() or not read_events(receiver):
             reasons.append("missing receiver observations for " + name)
+        elif meta.get("measurement_protocol_version", 1) >= 2:
+            rows = read_events(receiver)
+            if not receiver_healthy(rows) or any(
+                not e.get("ready") or e.get("iface") != name + "-eth0" for e in rows
+            ):
+                reasons.append("unhealthy receiver capture for " + name)
     return {
         "valid": not reasons,
         "reasons": reasons,
