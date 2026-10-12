@@ -43,8 +43,10 @@ requires the correct attack class. Wilson 95% intervals: 5/5 → 57–100%,
 - The baseline misnamed lateral movement because one contact was a SYN to
   h1:22, which tripped its SYN-retry rule (threshold: more than one attempt)
   first, in all five trials.
-- Floods and SYN retries target one known host, so the communication graph does
-  not change and the graph detector has nothing to score.
+- Floods and SYN retries target one host the attacker already talks to, so the
+  structural features barely change. Packet volume is one of the graph's
+  features, but with its fixed weight (0.3) these workloads did not produce
+  scores above the threshold.
 - The graph flagged scans as a generic graph anomaly: many ports, few hosts.
 - Detection delay is the wait for the current 10-second window to close. The
   flood rule needs two windows, hence about 14.5 s.

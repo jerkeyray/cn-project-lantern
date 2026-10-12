@@ -20,7 +20,7 @@ Both see the same 10-second observation windows:
 
 Either detector can trigger **automated OpenFlow drop rules (Algorithm D)**. The
 project asks whether network-wide graph structure helps catch and stop internal
-lateral movement that per-flow checks misread, and what that costs in latency,
+lateral movement that threshold rules misread, and what that costs in latency,
 controller load and collateral damage.
 
 ## Key findings
@@ -51,7 +51,8 @@ The two detectors are **complementary**:
   to reach h2, h3 and h5. The graph's label blocks all of h4, and nothing more
   arrives.
 - **The baseline covers more ground.** It detects and blocks scans, floods and
-  login retries. The graph can't see attacks that don't change who talks to whom.
+  login retries. Those attacks don't change who talks to whom, and under its
+  fixed configuration the graph's score never crossed its threshold for them.
 
 Five trials per condition give wide confidence intervals, and this is one
 small emulated topology. See [limits](#limits).
