@@ -1,5 +1,12 @@
 # Recorded experiment replay
 
+The replay reads the repaired campaign (`submission-repaired-20261012/`) by
+default, where every receiver passed a capture health check, so the receiver
+chart shows attack packets that actually arrived. To replay the historical
+22 September campaign, whose receivers listened on loopback and counted nothing,
+add `--submission submission`. The viewer then hides receiver counts and labels
+its blocking outcomes as unavailable.
+
 From the repository root, run `python3 -m replay serve --port 8000`, then open
 http://localhost:8000. Stop the server with Ctrl+C. If the port is occupied,
 choose another port, such as `--port 8001`. Python 3 is the only playback
@@ -22,18 +29,23 @@ dependency; no Docker, Node, network emulation, or internet connection is needed
 
 ## Present the project
 
-The five guided chapters use trial 1 as an illustrative example, not an average:
+Each chapter shows one recorded trial as an example; the "campaign results" line
+beside it is computed from the published tables across all trials:
 
-1. **Source versus class:** C5 detection with mitigation disabled. Both detectors
-   identify the source; only the graph assigns the configured lateral class.
-2. **Baseline mitigation:** C5 with the baseline actuating. Switch confirmation
-   exists, while the published blocking assessment remains unverified.
-3. **Graph mitigation:** C5 with graph actuation. Inspect confirmations, sampled
-   receiver counts, and legitimate requests before consulting the published
-   verified-blocking result.
-4. **Legitimate change:** benign peer communication produces false-positive
-   candidates. Cooldown can suppress operational alerts but not those candidates.
-5. **Attack order:** reversed C7 demonstrates the online profile's order effects.
+1. **Source versus class** (C5 detection, trial 1): both detectors flag h4 in the
+   same window; only the graph labels it lateral movement.
+2. **Baseline mitigation** (C5, baseline blocking, trial 1): the baseline's
+   login-retry label produces a narrow h4 → h1:22 rule. Both switches confirm it,
+   and the receiver chart then shows h2, h3 and h5 still receiving attack packets.
+3. **Graph mitigation** (C5, graph blocking, trial 2): the graph blocks all of h4
+   about 4.5 s in and the receiver chart stays flat. Trial 2 is used because it
+   is typical; trial 1 is the one lateral record where the graph's block came
+   late (14.6 s) and could not be verified.
+4. **Legitimate change** (C1 benign, trial 1): scheduled legitimate changes
+   produce false-alarm candidates. Cooldown can suppress operational alerts but
+   not those candidates.
+5. **Attack order** (reversed C7, trial 1): the online profiles make detection
+   depend on attack order.
 
 Use **Event →** to explain
 milestones one at a time, or Play at 2× or 5× for a continuous walkthrough.
@@ -42,9 +54,9 @@ observations up to that point. Changing chapters or trials resets to a paused
 start. Expand **Browse all trials** to filter by phase, case, actuator, and trial. Pilot and calibration
 remain labelled supplementary.
 
-Deep links open a chapter at a position, for example
-`http://localhost:8000/#replay&chapter=3&t=151` (graph mitigation at rule
-confirmation); `#results` opens the overview.
+Deep links open a chapter at a moment: `#replay&chapter=2&at=confirm` jumps to
+the block being confirmed, `at=detect` to the first detector flag, and `t=150` to
+a given second. `#results` opens the results view.
 
 Keyboard: Space toggles playback, Left/Right step milestones, Home restarts.
 Native buttons, selects, and the slider retain their normal keyboard controls
@@ -67,7 +79,7 @@ when focused. Reduced-motion preferences disable decorative moving dashes.
 - An operational decision may be observation-only. A complete confirmation
   requires the same actuating decision's full targeted switch set. No block
   is inferred simply because a switch acknowledged a rule.
-- Verified/unverified containment is the published retrospective assessment.
+- Historical verified/unverified values are retained published assessments, not evidence of receiver delivery.
   It appears as a timeline event at run end and is always labelled retrospective
   in the results panel. Missing confirmation times stay unavailable.
 - Expiry notifications and switch occupancy snapshots are separate measurements;
@@ -100,9 +112,11 @@ Preparation verifies every curated checksum, refuses invalid or incomplete runs,
 and writes only generated output. No experiment source, curated evidence, or
 original submission archive is modified.
 
-## Results report
+## Results documents
 
-`python3 -m replay.report` verifies the curated checksums, then writes
-`output/pdf/lantern-results-report.html` and prints it to
-`output/pdf/lantern-results-report.pdf` with headless Chrome. It reads
-only `submission/`; the earlier `lantern-research-report.pdf` is left untouched.
+`python3 -m replay.report` verifies the curated checksums of the repaired
+evidence, then prints two documents to `output/pdf/` with headless Chrome:
+`results-summary.pdf` (the conclusion and the five evaluations) and
+`results-report.pdf` (the same summary plus per-trial and per-record
+appendices, timing, cost, the measurement repair and provenance). Pass
+`--submission DIR` to build from another curated evidence set.

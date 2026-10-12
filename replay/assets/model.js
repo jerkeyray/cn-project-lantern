@@ -25,11 +25,13 @@ export function eventStep(run, time, direction) {
   return direction > 0 ? values.find(t=>t>time+0.000001) ?? run.duration : values.reverse().find(t=>t<time-0.000001) ?? 0;
 }
 export function receiverSeries(run, events) {
+  if (run.metadata?.measurement_protocol_version !== 2) return {};
   const groups = {};
   const sources = new Set(run.truths.map(t => t.src).filter(Boolean));
   for (const event of events.filter(e => e.kind === 'receiver')) {
     const counts = event.data.counts || {};
-    for (const src of new Set([...sources, ...Object.keys(counts)])) {
+    // Only attack sources: replies from targets inherit the marking but are not attack traffic.
+    for (const src of sources) {
       const key = `${src}|${event.data.dst}`;
       (groups[key] ||= []).push([event.time, counts[src] || 0]);
     }
@@ -71,5 +73,6 @@ export function pipeline(run, state) {
     decide: actuating.length ? 'actuating' : decisions.length ? 'observe' : 'idle',
     install: !mitigation ? 'disabled' : confirmed.length ? 'confirmed' : actuating.length ? 'pending' : 'idle',
     verify: !mitigation ? 'disabled' : !assessment.length ? 'pending' :
+      run.metadata.measurement_protocol_version !== 2 ? 'unavailable' :
       assessment.some(e => e.data.observed_blocking === 'verified') ? 'verified' : 'unverified'};
 }

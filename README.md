@@ -2,11 +2,12 @@
 
 ### Graph-based SDN controller-integrated intrusion detection and automated mitigation
 
-**Six hosts · two OpenFlow switches · one Ryu controller · 95 evaluation trials · 99/99 runs valid · 67 passing tests**
+**Six hosts · two OpenFlow switches · one Ryu controller · 95 evaluation trials, all valid · receiver-verified blocking**
 
-[Results](docs/results.md) · [Methodology](docs/evaluation.md) ·
-[Replay guide](docs/replay.md) · [Evidence](submission/) ·
-[Submission guide](docs/submission.md) · [Team](AUTHORS.md)
+[Final conclusion](docs/final-conclusion.md) · [Results](docs/results.md) ·
+[Methodology](docs/evaluation.md) · [Replay guide](docs/replay.md) ·
+[Evidence](submission-repaired-20261012/) · [Submission guide](docs/submission.md) ·
+[Team](AUTHORS.md)
 
 Lantern runs two intrusion detectors side by side inside a Ryu SDN controller.
 Both see the same 10-second observation windows:
@@ -18,32 +19,39 @@ Both see the same 10-second observation windows:
   new-neighbour ratio, port diversity, betweenness, community change).
 
 Either detector can trigger **automated OpenFlow drop rules (Algorithm D)**. The
-project asks whether network-wide graph structure helps catch internal
+project asks whether network-wide graph structure helps catch and stop internal
 lateral movement that per-flow checks misread, and what that costs in latency,
 controller load and collateral damage.
 
 ## Key findings
 
+From the repaired campaign (12 October 2026), where a receiver on every host
+counts the attack packets that actually arrive:
+
 | | Threshold baseline | Graph detector |
 | --- | --- | --- |
-| Sequential contact (lateral) **classified correctly** | 0/5 | **5/5** |
-| Primary attacks **detected** (scan, DoS, SYN retry, lateral) | **4/4 classes, 5/5 each** | 2/4 classes (missed DoS, SYN retry) |
-| False alarms when legitimate traffic changes | 30/273 windows (11.0%) | **14/273 (5.1%)** |
-| Drop rules confirmed / blocks **independently verified** | 25/30 / 0/30 | 10/30 / **10/30** |
-| Innocent HTTP requests served during mitigation | 2,304/2,304 | 2,304/2,304 |
-| Compute per 10 s window | 0.08 ms | 1.37 ms |
+| Lateral movement: attacker **found** | 5/5 | 5/5 |
+| Lateral movement: attack **named correctly** | 0/5 | **5/5** |
+| Lateral movement: **block verified** | 0/10 (leaked in **10/10**) | **9/10** (no leakage) |
+| Attack types detected (scan, flood, SYN retry, lateral) | **4/4** | 2/4 (missed flood, SYN retry) |
+| Scan, flood and SYN-retry blocks verified | **15/20** (no rule in 5) | none (no rule) |
+| False alarms when legitimate traffic changes | 31/297 windows (10.44%) | **16/297 (5.39%)** |
+| Innocent HTTP requests served during attacks | 1,476/1,476 | 1,476/1,476 |
+| Compute per 10 s window | 0.15 ms | 1.64 ms |
 
 The two detectors are **complementary**:
 
-- **Both find the source.** Both flag h4 in the same window, about 8.7 s after
-  the attack starts. That delay is set by the window closing, not by computation.
-- **Only the graph names the pattern.** The baseline calls sequential contact a
-  SYN retry, because one of the contacts hits SSH port 22.
-- **The label decides the response.** The graph's correct label produces a
-  source-wide drop that independent evidence confirms. The baseline's mislabel
-  produces a narrow h4→h1:22 pair rule, which the other contacts bypass.
-- **The baseline covers more ground.** It detects every attack class. The graph
-  misses single-pair floods, which have no structural signal.
+- **Both find the attacker.** Both flag h4 in the same window, about 4.5 s after
+  the attack starts. That delay is the wait for the window to close, not
+  computation.
+- **Only the graph names lateral movement.** The baseline calls it a login
+  (SYN-retry) attack, because one of the contacts hits SSH port 22.
+- **The label decides whether the block works.** Both block about 4.5 s in.
+  The baseline's label produces a narrow h4 → h1:22 rule, and the attack goes on
+  to reach h2, h3 and h5. The graph's label blocks all of h4, and nothing more
+  arrives.
+- **The baseline covers more ground.** It detects and blocks scans, floods and
+  login retries. The graph can't see attacks that don't change who talks to whom.
 
 Five trials per condition give wide confidence intervals, and this is one
 small emulated topology. See [limits](#limits).
@@ -53,8 +61,8 @@ small emulated topology. See [limits](#limits).
 | I want to… | Run | Needs |
 | --- | --- | --- |
 | **See the experiments** | `python3 -m replay serve --port 8000` → [localhost:8000](http://localhost:8000) | Python 3 only |
-| **Read the full results** | `python3 -m replay.report` → `output/pdf/lantern-results-report.pdf` | Python 3 + Chrome |
-| **Verify the evidence** | `make build && make validate && make verify` | Docker |
+| **Read the results** | `python3 -m replay.report` → `output/pdf/results-summary.pdf` and `results-report.pdf` | Python 3 + Chrome |
+| **Verify the evidence** | see [Evidence and verification](#evidence-and-verification) | Docker |
 | **Re-run everything** | `make campaign CAMPAIGN=results/campaigns/my-run` | Docker (privileged), several hours |
 
 ## Watch the recorded experiments
@@ -63,36 +71,39 @@ small emulated topology. See [limits](#limits).
 python3 -m replay serve --port 8000
 ```
 
-![Guided replay: graph mitigation at the moment both switches confirm the drop rule](docs/img/replay.png)
+![Guided replay: the baseline's narrow block while the attack keeps reaching other hosts](docs/img/replay.png)
 
 The viewer plays back the saved logs of every trial. It runs no network
 experiments and makes no external requests. It has two views:
 
 - **Guided replay**: five chapters (C5 detection → baseline mitigation → graph
   mitigation → legitimate change → reversed order). Each chapter says what to
-  watch and gives the result across all five trials.
+  watch and gives the result across all trials, computed from the published
+  tables.
   - A pipeline strip lights up Algorithms A → B/C → decision → D → verification
     as the run reaches each stage.
-  - Detector cards show whether the source and the class were right, plus the
-    score against its threshold.
+  - Detector cards show whether the source and the attack type were right, plus
+    the score against its threshold.
+  - The receiver chart shows attack packets arriving at each target, so you can
+    watch the baseline's block leak and the graph's hold.
   - **Focus on attack** zooms past the 135 s warmup.
-- **Results**: a one-line verdict, then five plain questions, each
-  answered with one picture: which attacks were caught, how often normal
-  traffic caused false alarms, whether blocking actually worked, whether
-  innocent users noticed, and what the graph costs. Links jump to the replay
-  moment behind each answer. Definitions and the Review 1 objectives are folded
-  away at the bottom.
+- **Results**: a one-line verdict, then five plain questions, each answered with
+  one picture: which attacks were caught, how often normal traffic caused false
+  alarms, whether blocking actually worked, whether innocent users noticed, and
+  what the graph costs. Links jump to the replay moment behind each answer.
 
 ![Results view](docs/img/results.png)
 
-Keyboard: Space play/pause, ← → step through events, Home restart. A link such
-as `localhost:8000/#replay&chapter=3&t=151` opens a chapter at a given second.
-You can also browse all 95 evaluation trials plus the separately labelled
-calibration and pilot runs.
+Keyboard: Space play/pause, ← → step through events, Home restart. Links can
+open a chapter at a moment: `#replay&chapter=2&at=confirm` jumps to the block,
+`at=detect` to the first flag, or `t=150` to a given second. The trial browser
+covers all 95 evaluation trials.
 
-The viewer keeps detector candidates, operational alerts, switch confirmations
-and independently verified blocking separate. See the [replay guide](docs/replay.md)
-for what each visual does and does not show.
+To replay the earlier, historical campaign instead:
+
+```sh
+python3 -m replay serve --port 8000 --submission submission
+```
 
 To export a portable copy:
 
@@ -104,25 +115,22 @@ Extract it, enter `lantern-replay/`, and run `python3 serve.py --port 8000`. The
 server checks every file against its checksum inventory before it starts, and
 it binds to localhost only.
 
-## Results report
+## Results documents
 
 ```sh
 python3 -m replay.report
 ```
 
-This verifies the curated checksums, then writes
-`output/pdf/lantern-results-report.pdf` (18 pages). It covers:
+This verifies every curated checksum, then writes two PDFs to `output/pdf/`:
 
-- an executive summary
-- Review 1 plan → delivered traceability (objectives O1–O4, cases C1–C7,
-  algorithms A–D, metrics, research gaps)
-- the mechanism behind each detection outcome
-- a worked C5 timeline
-- false alarms, mitigation, delivery and cost
-- answers to research questions Q1–Q4
-- limitations and per-trial appendices
+- **`results-summary.pdf`** (5 pages): the conclusion first, then the five
+  evaluations (detection, false alarms, blocking, innocent users, cost), each
+  with one result, one picture and why it happened.
+- **`results-report.pdf`**: the same summary plus appendices: every detection
+  trial, every blocking record, delivery latency, cost per condition, rule
+  timing, the measurement repair, Review 1 traceability and provenance.
 
-The report and the viewer compute their headline numbers with the same module,
+The documents and the viewer compute their numbers with the same module,
 [replay/summary.py](replay/summary.py), which reads only the published tables.
 
 ## Architecture
@@ -145,9 +153,9 @@ flowchart LR
 | Case | Workload | Tests |
 | --- | --- | --- |
 | C1 | Normal synthetic traffic plus real HTTP probes | False-positive rate |
-| C2 | TCP SYN sweep over 83 ports | Scan detection |
-| C3 | 1,500 packets/s flood for 20 s | High-rate anomaly |
-| C4 | 60 repeated SYNs to an auth port | Brute-force-style retries |
+| C2 | TCP SYN sweep across many ports, repeated for 40 s | Scan detection |
+| C3 | 1,500 packets/s flood for 40 s | High-rate anomaly |
+| C4 | Repeated SYNs to an auth port for 40 s | Brute-force-style retries |
 | C5 | Sequential contact to five internal hosts | Lateral-movement detection |
 | C6 | Sequential contact then scan, heavier normal traffic | Disruption under mixed load |
 | C7 | Sequential contact → scan → SYN retry (and reversed) | Head-to-head, order effects |
@@ -163,14 +171,15 @@ membership, not community labels.
 | Path | Contents |
 | --- | --- |
 | `lantern/` | Ryu application: collector, features, both detectors, decision, mitigation |
-| `experiments/`, `traffic/`, `topo/` | Case definitions, campaign runner, traffic generators, Mininet topology |
-| `tests/` | Research unit/regression suite (67 tests) |
-| `submission/` | Curated evidence: raw logs, published tables, manifest, checksums |
-| `replay/` | Evidence viewer, shared result summary, PDF report builder, and their tests |
-| `docs/` | Results, methodology, replay and submission guides |
+| `experiments/`, `traffic/`, `topo/` | Case definitions, campaign runner, traffic generators and receivers, Mininet topology |
+| `tests/` | Research unit/regression suite (90 tests) |
+| `submission-repaired-20261012/` | **Current evidence**: raw logs, published tables, manifest, checksums |
+| `submission/` | Historical evidence (22 September 2026); its receivers could not observe traffic |
+| `replay/` | Evidence viewer, shared result summary, PDF builders, and their tests |
+| `docs/` | Conclusion, results, methodology, replay and submission guides |
 
 `replay/` is deliberately kept outside the frozen experiment source inventory,
-so changing the viewer or the report never changes the evaluated source hash.
+so changing the viewer or the reports never changes the evaluated source hash.
 
 ## Setup and quick checks
 
@@ -222,8 +231,11 @@ make analyze CAMPAIGN=results/campaigns/my-submission
 A campaign runs a pilot, three normal-only calibration trials and 95 evaluation
 trials: 35 detection + 50 mitigation + 5 benign variation + 5 reversed order.
 Expect several hours; the pilot prints a measured estimate. Every trial gets a
-fresh container. Failed attempts stay on disk and are retried once. Two failures
-stop the campaign for diagnosis.
+fresh container, and every receiver must pass a capture health check or the
+run is invalid. Failed attempts stay on disk and are retried once. Two failures
+stop the campaign for diagnosis. The repaired campaign itself was produced with
+[scripts/run_repaired_campaign.sh](scripts/run_repaired_campaign.sh), which
+imports the historical calibration instead of re-calibrating.
 
 For staged execution or resumption:
 
@@ -240,33 +252,37 @@ campaign, and thresholds are frozen before evaluation.
 
 ## Evidence and verification
 
-The completed campaign is `results/campaigns/submission-20260922-v2`. Its
-curated evidence lives in `submission/`. All 95 evaluation trials, three
-calibration trials and the pilot passed validity checks on the first attempt.
-Legacy runs under `results/raw/` are preserved but are not final submission
-claims.
+The current campaign is `results/campaigns/submission-20261012-measurement-v3`.
+Its curated evidence lives in `submission-repaired-20261012/`. All 95 evaluation
+trials passed validity checks, and all 570 receiver logs passed their capture
+health checks.
 
-![Detection coverage with confidence intervals](submission/tables/coverage.png)
+![Detection coverage with confidence intervals](submission-repaired-20261012/tables/coverage.png)
+
+Verify the evidence (every checksum, plus exact regeneration of every published
+table) and build the submission archive:
 
 ```sh
 make build
 make validate
-make verify
-make package
+docker run --rm --network none -v "$PWD:/opt/lantern" --entrypoint python3 \
+  lantern-sdn-ids -m experiments.package verify --submission submission-repaired-20261012
+docker run --rm --network none -v "$PWD:/opt/lantern" --entrypoint python3 \
+  lantern-sdn-ids -m experiments.package archive --submission submission-repaired-20261012 \
+  --output output/lantern-submission-repaired-20261012.tar.gz
 ```
 
-- `make verify` checks every evidence checksum and regenerates every published
-  CSV for an exact comparison.
-- `make package` builds `output/lantern-submission.tar.gz` and a SHA-256 sidecar
-  from an explicit allowlist (source, documentation and curated evidence). It
-  refuses to overwrite an existing archive.
-
-The archive does not include the replay. Ship that with `replay export` above.
+`make verify` and `make package` still default to the historical `submission/`
+folder; the Makefile is part of the frozen source, so it was left unchanged.
+The archive is built from an explicit allowlist (source, documentation and the
+chosen evidence, placed at `lantern/submission/`), gets a SHA-256 sidecar, and
+is never overwritten. It does not include the replay; ship that with
+`replay export` above.
 
 To reproduce from an extracted archive:
 
 ```sh
-tar -xzf output/lantern-submission.tar.gz -C /path/to/empty-directory
+tar -xzf output/lantern-submission-repaired-20261012.tar.gz -C /path/to/empty-directory
 cd /path/to/empty-directory/lantern
 make build
 make validate
@@ -284,33 +300,41 @@ docker run --rm --network none -v "$PWD:/opt/lantern" --entrypoint python3 \
 
 These files form the audit trail:
 
-- [manifest](submission/manifest.json)
-- [validity table](submission/tables/validity.csv)
-- [result-to-evidence map](submission/tables/evidence_map.csv)
-- [checksums](submission/checksums.json)
-- per-trial [containment](submission/tables/containment.csv),
-  [delivery](submission/tables/disruption.csv) and
-  [overhead](submission/tables/overhead.csv)
+- [manifest](submission-repaired-20261012/manifest.json)
+- [validity table](submission-repaired-20261012/tables/validity.csv)
+- [result-to-evidence map](submission-repaired-20261012/tables/evidence_map.csv)
+- [checksums](submission-repaired-20261012/checksums.json)
+- per-attack [blocking](submission-repaired-20261012/tables/containment.csv) and
+  its [summary](submission-repaired-20261012/tables/blocking_summary.csv)
+- per-trial [delivery](submission-repaired-20261012/tables/disruption.csv) and
+  [overhead](submission-repaired-20261012/tables/overhead.csv)
 
 ## Limits
 
 - **Simulated attacks.** Repeated SYNs do not authenticate, and sequential
   contacts do not demonstrate real compromise or propagation.
-- **One baseline.** It is this implementation's source/pair threshold detector
-  and does not represent every per-flow method.
+- **One baseline.** It is this implementation's source/pair threshold detector.
+  Its lateral-movement mislabel comes from rule order and thresholds; a
+  different rule priority might fix it without a graph, which was not tested.
 - **Small, dependent samples.** Five trials per condition. Live scheduling
   varies even with seeds. Multi-attack observations within a run share
   adaptive profiles.
-- **Order sensitivity.** Profiles keep learning during evaluation. Reversing C7
-  made both detectors miss the scan and the SYN retry.
+- **Order sensitivity.** Profiles keep learning during evaluation. With the
+  attack order reversed, the graph caught the scan in 1/5 trials and the SYN
+  retries in none.
+- **Verification is sampled.** A verified block means stable receiver counts
+  across the sampled interval after confirmation, not a lossless wire capture.
+  Source-wide drop counters can include the attacker's legitimate traffic.
+- **Combined policy not evaluated.** Pairing the baseline's breadth with the
+  graph's label is the recommendation, not a measured result.
 - **TCAM is a proxy.** Flow-table entries measure software occupancy, not
   hardware TCAM.
-- **Blocking needs more than silence.** A verified block also requires ongoing
-  sends, positive matching drop counters and correlated switch replies.
-- **Recovery is measured, not assumed.** Source-wide idle-timeout rules can stay
-  active while the host keeps sending legitimate traffic.
 - **Out of scope:** ML classifiers, Suricata, redirection, production deployment
   and multi-controller scaling.
+
+The historical campaign (`submission/`, 22 September 2026) is kept for the
+record. Its receivers listened on loopback and counted nothing, so its blocking
+results are superseded; its detection results showed the same pattern.
 
 If service delivery fails, inspect run validity and process logs before
 interpreting any detection result. If the datapath gate fails, use a Linux host

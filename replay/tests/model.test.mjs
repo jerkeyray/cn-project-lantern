@@ -22,7 +22,7 @@ assert.equal(eventStep(run,16,-1),15);
 assert.equal(eventStep(run,30,1),30);
 assert.equal(eventStep(run,0,-1),0);
 assert.deepEqual(snapshot(run,0),snapshot(run,0));
-assert.deepEqual(receiverSeries({truths:[{src:'a'}]},[{kind:'receiver',time:1,data:{dst:'b',counts:{}}}]),{'a|b':[[1,0]]});
+assert.deepEqual(receiverSeries({metadata:{measurement_protocol_version:2},truths:[{src:'a'}]},[{kind:'receiver',time:1,data:{dst:'b',counts:{}}}]),{'a|b':[[1,0]]});
 assert.deepEqual(receiverSeries({truths:[{src:'a'}]},[]),{});
 console.log('Replay state: 14 assertions passed (including backward seek, missing timestamps, and sampled zeros).');
 const {focusWindow,activeRules,pipeline} = await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
@@ -34,4 +34,9 @@ const mrun={...run,metadata:{mitigator:'graph'}};
 assert.equal(pipeline(mrun,snapshot(mrun,15)).graph,'flagged');
 assert.equal(pipeline(mrun,snapshot(mrun,15)).install,'idle');
 assert.equal(pipeline({...run,metadata:{mitigator:'none'}},snapshot(run,30)).verify,'disabled');
-console.log('Replay focus and pipeline: 6 assertions passed.');
+// Replies from targets inherit the attack marking; they must not appear as attack series.
+assert.deepEqual(receiverSeries({metadata:{measurement_protocol_version:2},truths:[{src:'a'}]},[{kind:'receiver',time:1,data:{dst:'a',counts:{t:3}}}]),{'a|a':[[1,0]]});
+console.log('Replay focus and pipeline: 7 assertions passed.');
+
+assert.deepEqual(receiverSeries({metadata:{},truths:[{src:'a'}]},[{kind:'receiver',time:1,data:{dst:'b',counts:{}}}]),{});
+assert.equal(pipeline({...mrun,events:[{kind:'blocking_assessment',time:1,data:{observed_blocking:'verified'}}]},snapshot({...mrun,events:[{kind:'blocking_assessment',time:1,data:{observed_blocking:'verified'}}]},30)).verify,'unavailable');

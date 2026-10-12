@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 import zipfile
 
-from .data import prepare
+from .data import DEFAULT_SUBMISSION, prepare
 from .server import serve
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +17,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     for action in ("serve", "export"):
         p = sub.add_parser(action)
-        p.add_argument("--submission", type=Path, default=ROOT / "submission")
+        p.add_argument("--submission", type=Path, default=ROOT / DEFAULT_SUBMISSION)
         if action == "serve":
             p.add_argument("--port", type=int, default=8000)
         else:

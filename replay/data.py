@@ -22,12 +22,17 @@ TOPOLOGY = {
     "switches": ["s1", "s2"],
     "links": [["s1", "s2"]],
 }
+# Default evidence: the repaired campaign (working receivers). The historical
+# 2026-09-22 campaign stays in submission/ and can be replayed with --submission.
+DEFAULT_SUBMISSION = "submission-repaired-20261012"
+# (title, phase, case, actuator, trial). Graph mitigation uses trial 2: trial 1
+# is the one lateral record whose graph block came late and was not verified.
 CHAPTERS = [
-    ("Source versus class", "detection", "C5", "none"),
-    ("Baseline mitigation", "mitigation", "C5", "baseline"),
-    ("Graph mitigation", "mitigation", "C5", "graph"),
-    ("Legitimate change", "benign", "C1", "none"),
-    ("Attack order", "order", "C7", "none"),
+    ("Source versus class", "detection", "C5", "none", 1),
+    ("Baseline mitigation", "mitigation", "C5", "baseline", 1),
+    ("Graph mitigation", "mitigation", "C5", "graph", 2),
+    ("Legitimate change", "benign", "C1", "none", 1),
+    ("Attack order", "order", "C7", "none", 1),
 ]
 
 
@@ -190,7 +195,7 @@ def convert_run(root, log, tables):
                 append(row, path, line)
     for row in summary.get("containment", []):
         append({"kind": "blocking_assessment", "wall": ends[0]["wall"],
-                **row}, root / "tables" / "containment.csv")
+                **row, "blocking_outcome": row.get("blocking_outcome", "unavailable_receiver_evidence")}, root / "tables" / "containment.csv")
         events[-1]["clock"] = "published retrospective assessment at run end"
     events.sort(key=lambda e: (e["time"] is None, e["time"] or 0,
                                 e["source"], e["line"] if e["line"] is not None else 10**9,
@@ -251,11 +256,11 @@ def prepare(submission, destination):
                         "metadata": run["metadata"], "duration": run["duration"], "file": filename})
         refs.update(run["evidence"])
     chapters = []
-    for title, phase, case, mitigator in CHAPTERS:
+    for title, phase, case, mitigator, trial in CHAPTERS:
         match = next(r for r in catalog if r["metadata"]["phase"] == phase
                      and r["metadata"]["case"] == case and r["metadata"]["mitigator"] == mitigator
-                     and r["metadata"]["trial"] == 1)
-        chapters.append({"title": title, "id": match["id"]})
+                     and r["metadata"]["trial"] == trial)
+        chapters.append({"title": title, "id": match["id"], "trial": trial})
     write_json(destination / "data/index.json", {"schema_version": 1,
         "runs": catalog, "chapters": chapters, "topology": TOPOLOGY,
         "source_checksums_sha256": digest(submission / "checksums.json"),

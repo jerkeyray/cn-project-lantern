@@ -141,11 +141,11 @@ class CuratedEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Incomplete run"):
                 convert_run(root, target, {})
 
-    def test_source_inventory_and_curated_evidence_are_unchanged(self):
+    def test_historical_source_provenance_and_evidence_are_preserved(self):
         self.assertEqual(self.before, digest(SUBMISSION / "checksums.json"))
         verify_evidence(SUBMISSION)
-        from experiments.campaign import source_hash
-        self.assertEqual(source_hash(), (SUBMISSION / "source.sha256").read_text().strip())
+        manifest = json.loads((SUBMISSION / "manifest.json").read_text())
+        self.assertEqual(manifest["source_hash"], (SUBMISSION / "source.sha256").read_text().strip())
 
     def test_overview_matches_published_headline_figures(self):
         o = json.loads((self.output / "data/index.json").read_text())["overview"]
@@ -157,7 +157,9 @@ class CuratedEvidenceTests(unittest.TestCase):
         self.assertEqual((fp["benign|graph"]["flagged"], fp["benign|graph"]["eligible"]), (14, 273))
         m = o["mitigation"]
         self.assertEqual((m["baseline"]["confirmed"], m["baseline"]["verified"], m["baseline"]["records"]), (25, 0, 30))
-        self.assertEqual((m["graph"]["confirmed"], m["graph"]["verified"], m["graph"]["records"]), (10, 10, 30))
+        self.assertEqual((m["graph"]["confirmed"], m["graph"]["verified"], m["graph"]["records"]), (10, 0, 30))
+        self.assertEqual(m["graph"]["legacy_counter_evidence"], 10)
+        self.assertFalse(m["graph"]["receiver_evidence_available"])
         self.assertEqual(o["delivery"]["graph|innocent|recovery"], {"attempts": 1683, "successes": 1683})
         self.assertEqual(o["validity"], {"valid": 99, "runs": 99})
         self.assertAlmostEqual(o["cost"]["graph_ms"]["mean"], 1.37, places=2)
@@ -167,6 +169,33 @@ class CuratedEvidenceTests(unittest.TestCase):
         for run in self.runs:
             for ref in run["evidence"]:
                 self.assertIn("evidence/" + ref, allowed)
+
+
+class RepairedEvidenceTests(unittest.TestCase):
+    """The default replay and the reports read the repaired campaign."""
+
+    @classmethod
+    def setUpClass(cls):
+        from replay.data import DEFAULT_SUBMISSION
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.output = Path(cls.tmp.name) / "viewer"
+        prepare(ROOT / DEFAULT_SUBMISSION, cls.output)
+        cls.index = json.loads((cls.output / "data/index.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_blocking_headline_figures(self):
+        b = self.index["overview"]["blocking"]
+        self.assertEqual((b["baseline|lateral"]["leakage"], b["baseline|lateral"]["records"]), (10, 10))
+        self.assertEqual((b["graph|lateral"]["verified"], b["graph|lateral"]["leakage"]), (9, 0))
+        self.assertEqual((b["baseline|all"]["verified"], b["graph|all"]["verified"]), (15, 9))
+
+    def test_graph_mitigation_chapter_uses_typical_trial(self):
+        chapter = next(c for c in self.index["chapters"] if c["title"] == "Graph mitigation")
+        run = next(r for r in self.index["runs"] if r["id"] == chapter["id"])
+        self.assertEqual((run["metadata"]["case"], run["metadata"]["mitigator"], run["metadata"]["trial"]), ("C5", "graph", 2))
 
 
 class ServerTests(unittest.TestCase):

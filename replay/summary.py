@@ -58,8 +58,32 @@ def overview(tables, thresholds=None):
         delays = [_float(r["rule_confirmation_delay"]) for r in rows]
         mitigation[det] = {"records": len(rows), "runs": len({r["run"] for r in rows}),
                            "confirmed": sum(d is not None for d in delays),
-                           "verified": sum(r["observed_blocking"] == "verified" for r in rows),
+                           "verified": sum(r["observed_blocking"] == "verified" and r.get("measurement_protocol_version") == "2" for r in rows),
+                           "testable": sum(r.get("testable") == "True" for r in rows),
+                           "outcomes": {outcome: sum(r.get("blocking_outcome") == outcome for r in rows)
+                                        for outcome in sorted({r.get("blocking_outcome") for r in rows if r.get("blocking_outcome")})},
+                           "legacy_counter_evidence": sum(r["observed_blocking"] == "verified" and r.get("measurement_protocol_version") != "2" for r in rows),
+                           "receiver_evidence_available": bool(rows) and all(r.get("receiver_evidence_available") == "True" for r in rows),
                            "delay": _stats(delays)}
+
+    # Per attack type: every record stays in the denominator; outcomes come from the published table.
+    blocking = {}
+    for det in DETECTORS:
+        for attack in ATTACKS + ["all"]:
+            rows = [r for r in tables["containment"] if r["phase"] == "mitigation" and r["mitigator"] == det
+                    and (attack == "all" or r["attack_class"] == attack)]
+            outcome = lambda name: sum(r.get("blocking_outcome") == name for r in rows)
+            blocking["%s|%s" % (det, attack)] = {
+                "records": len(rows), "testable": sum(r.get("testable") == "True" for r in rows),
+                "verified": sum(r["observed_blocking"] == "verified" and r.get("measurement_protocol_version") == "2" for r in rows),
+                "leakage": outcome("observed_leakage"), "no_confirmation": outcome("no_confirmation"),
+                "insufficient_drops": outcome("insufficient_drop_evidence")}
+
+    order = {}
+    for r in coverage:
+        if r["phase"] == "order":
+            order["%s|%s" % (r["attack_class"], r["detector"])] = {
+                "detected": int(r["detected"]), "instances": int(r["instances"]), "class_exact": int(r["class_exact"])}
 
     delivery = {}
     for det in DETECTORS:
@@ -90,6 +114,7 @@ def overview(tables, thresholds=None):
     validity = tables["validity"]
     return {"names": NAMES, "attacks": ATTACKS, "primary": primary,
             "false_positives": false_positives, "mitigation": mitigation,
+            "blocking": blocking, "order": order,
             "delivery": delivery, "cost": cost, "timing": timing,
             "thresholds": thresholds or {},
             "validity": {"valid": sum(r["valid"] == "True" for r in validity),

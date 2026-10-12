@@ -1,0 +1,197 @@
+"""Narrative of the results documents, built by `python3 -m replay.report`.
+
+sections(R) is the results summary: the conclusion and the five evaluations.
+appendices(R) adds the detail for the full report. R is the loaded report
+module, which holds the verified tables and the shared figures and helpers.
+"""
+
+import statistics as st
+
+from .summary import ATTACKS, NAMES
+
+
+def sections(R):
+    O, P, FP, DL, BK, pct, table, chip = R.O, R.P, R.FP, R.DL, R.BK, R.pct, R.table, R.chip
+    fb, fg = FP("benign", "baseline"), FP("benign", "graph")
+    fdb, fdg = FP("detection", "baseline"), FP("detection", "graph")
+    bl, gl = BK("baseline|lateral"), BK("graph|lateral")
+    cost = O["cost"]
+    inn = {d: [DL("%s|innocent|%s" % (d, p)) for p in ("attack", "recovery")] for d in ("baseline", "graph")}
+    lead_b, lead_g = R.arrivals("C5", "baseline", 1), R.arrivals("C5", "graph", 2)
+    graph_delays = sorted(float(r["rule_confirmation_delay"]) for r in R.T["containment"]
+                          if r["phase"] == "mitigation" and r["mitigator"] == "graph" and r["attack_class"] == "lateral" and r["rule_confirmation_delay"])
+    typical = st.median(graph_delays)
+    S = []
+
+    S.append('''<section class="cover">
+<p class="kicker">Computer Networks · Semester Project · Results summary</p>
+<h1>Graph-Based SDN Controller-Integrated Intrusion Detection and Automated Mitigation</h1>
+<p class="sub">Does a network-wide “who talks to whom” graph detect and stop internal lateral movement better than conventional per-flow threshold rules?</p>
+<div class="answer"><p class="kicker">Conclusion</p>
+<p><b>For lateral movement, yes. Overall, the two detectors are complementary.</b> Both detectors found the attacker in all five lateral-movement trials, but only the graph named the attack correctly (%d/5 vs %d/5). That label decided the block. In the ten lateral blocking tests, the baseline’s narrow rule let attack packets reach other hosts every time (%d/%d), while the graph’s block on all of the attacker’s traffic was verified in %d/%d with no leakage. The baseline covered more ground: it caught and blocked the scan, flood and login-retry attacks, which the graph missed or mislabelled.</p>
+<p><b>Recommendation:</b> run both detectors, and let the graph’s label decide how wide the block should be. This combined policy is a proposal; it was not itself evaluated.</p></div>
+<div class="kpis">
+<div><b>%d/5 vs %d/5</b><span>lateral movement named correctly, graph vs baseline</span></div>
+<div><b>%d/%d vs %d/%d</b><span>lateral blocks verified, graph vs baseline (baseline leaked in %d/%d)</span></div>
+<div><b>4/4 vs 2/4</b><span>attack types detected, baseline vs graph</span></div>
+<div><b>%s vs %s</b><span>false alarms when normal traffic changed, graph vs baseline</span></div>
+<div><b>%s</b><span>innocent web requests served during attacks, under both detectors</span></div>
+<div><b>%.2f ms</b><span>graph computation per 10 s window (baseline %.2f ms)</span></div>
+</div>
+<table class="meta"><tr><td>Team</td><td>Vatsala Rai (24BCE2803) · Yoshita Vanapalli (24BCE2812) · Jahnavi Sharma (24BCE2707) · Hasini (24BCE0342)</td></tr>
+<tr><td>Evaluation</td><td>%d trials, all valid; every receiver passed a capture health check (campaign <code>%s</code>)</td></tr>
+<tr><td>Date</td><td>12 October 2026</td></tr></table>
+</section>''' % (P("lateral", "graph")["class_exact"], P("lateral", "baseline")["class_exact"], bl["leakage"], bl["records"], gl["verified"], gl["records"],
+                 P("lateral", "graph")["class_exact"], P("lateral", "baseline")["class_exact"], gl["verified"], gl["records"], bl["verified"], bl["records"], bl["leakage"], bl["records"],
+                 pct(fg["flagged"], fg["eligible"]), pct(fb["flagged"], fb["eligible"]),
+                 pct(inn["graph"][0]["successes"], inn["graph"][0]["attempts"], 0),
+                 cost["graph_ms"]["mean"], cost["baseline_ms"]["mean"], len(R.T["validity"]), R.E.name))
+
+    S.append('''<section class="pb"><h2>What was evaluated</h2>
+%s<p class="cap">Emulated network: six hosts, two OpenFlow switches, one Ryu controller. h4 is the attacker.</p>
+<ul>
+<li><b>Two detectors, same traffic.</b> Both run inside the SDN controller and look at identical 10-second windows.
+<ul><li><b>Threshold baseline:</b> fixed rules, such as “more than %d ports”, “more than %d packets/s” or “more than %d login retry”.</li>
+<li><b>Graph detector:</b> builds a who-talks-to-whom map each window and flags hosts whose connections change sharply from their own normal, for example many new neighbours at once.</li></ul></li>
+<li><b>Automatic blocking.</b> When a detector raises an alert, the controller installs a drop rule on the switches. Its width depends on the attack label: one conversation for a login or flood attack, all of the host’s traffic for lateral movement or a scan. In each blocking trial only one detector may block.</li>
+<li><b>Attacks (simulated):</b> port scan, flood (DoS), repeated login attempts (SYN retry), and lateral movement (one host contacting five internal hosts in sequence), plus mixed and reversed-order runs. Scans, floods and login retries send for 40 seconds.</li>
+<li><b>Scale:</b> 35 detection-only trials, 50 blocking trials, 5 trials with legitimate traffic changes, 5 reversed-order trials. Thresholds were fixed from attack-free calibration before any attack was run.</li>
+<li><b>Measurement:</b> a receiver on every host counts attack packets that arrive. Each receiver must pass a health check before the run starts, so “nothing arrived” is a real measurement.</li>
+</ul>
+<h3>How results were judged</h3>%s</section>''' % (R.svg_topology(), R.TH["PORTSCAN_PORTS"], R.TH["DOS_PPS"], R.TH["BRUTEFORCE_ATTEMPTS"], table(["Measure", "Meaning"], [
+        ["Caught", "The detector flagged the attacking host during the attack."],
+        ["Named correctly", "It also reported the right attack type."],
+        ["False alarm", "A 10-second window in which a non-attacking host was flagged."],
+        ["Rule installed", "Every targeted switch confirmed the drop rule."],
+        ["Block verified", "After the rule was installed, the attacker kept sending for at least 3 s, the rule’s drop counter rose, and no more attack packets arrived at any target."],
+        ["Leaked", "Attack packets reached a target after the rule was installed."],
+        ["Uncertainty", "Five trials per condition: a 5/5 result has a 95% interval of 57–100%, and 0/5 has 0–43%."]])))
+
+    rows = []
+    for a in ATTACKS:
+        cell = lambda r: (chip(False, "missed") if not r["detected"] else chip(r["class_exact"] == r["instances"], "caught %d/5" % r["detected"] + ("" if r["class_exact"] == r["instances"] else ", wrong type")))
+        rows.append(["<b>%s</b>" % NAMES[a], cell(P(a, "baseline")), cell(P(a, "graph"))])
+    order = O["order"]
+    ordtxt = lambda d: ", ".join("%s %d/%d" % (NAMES[a].lower(), order["%s|%s" % (a, d)]["detected"], order["%s|%s" % (a, d)]["instances"]) for a in ATTACKS if "%s|%s" % (a, d) in order)
+    S.append('''<section class="pb"><h2>Evaluation 1 · Detection</h2>
+<p class="lead">The baseline caught every attack type. The graph caught the scan and the lateral movement, and it was the only detector that named lateral movement correctly.</p>%s%s
+<p class="cap">Share of trials in which the attacker was caught, with 95%% intervals (grey: baseline, blue: graph). Five trials per attack, blocking switched off.</p>
+<ul><li><b>Why the baseline misnamed lateral movement:</b> one of h4’s contacts was a connection to h1’s SSH port (22). That tripped the login-retry rule first in all five trials (“2 connection attempts to an authentication port”), so the baseline called the attack a login attack.</li>
+<li><b>Why the graph missed floods and login retries:</b> both attacks hammer one host. The set of who-talks-to-whom never changes, so the graph has no signal to score.</li>
+<li><b>Why the graph’s scan label was generic:</b> a scan touches many ports on one host, so the graph flagged it as a general anomaly rather than lateral movement.</li>
+<li><b>Speed:</b> both detectors flagged scans, login retries and lateral movement about %.1f s after the attack began, which is the wait for the current 10-second window to close. Floods took about %.1f s because that rule needs two windows.</li></ul>
+<h2>Evaluation 2 · False alarms</h2>
+<p class="lead">When normal traffic patterns changed legitimately, the graph raised about half as many false alarms as the baseline. Neither was alarm-free.</p>%s
+<p>With ordinary traffic in the 35 detection runs, the baseline flagged %d of %s windows and the graph %d. When the attack order was reversed, the baseline still caught everything (%s). The graph caught the lateral movement but mostly missed the rest (%s), because both detectors keep learning as traffic arrives.</p></section>''' % (
+        table(["Attack", "Threshold baseline", "Graph detector"], rows), R.svg_coverage(),
+        P("lateral", "baseline")["mttd_mean"], P("dos", "baseline")["mttd_mean"],
+        R.svg_bars([("Threshold baseline", fb["flagged"] / fb["eligible"], "base", "%s (%d of %d windows)" % (pct(fb["flagged"], fb["eligible"], 2), fb["flagged"], fb["eligible"])),
+                    ("Graph detector", fg["flagged"] / fg["eligible"], "graph", "%s (%d of %d windows)" % (pct(fg["flagged"], fg["eligible"], 2), fg["flagged"], fg["eligible"]))], 0.15, lambda v: "15%"),
+        fdb["flagged"], "{:,}".format(fdb["eligible"]), fdg["flagged"], ordtxt("baseline"), ordtxt("graph")))
+
+    brow = []
+    for a in ATTACKS:
+        cells = []
+        for d in ("baseline", "graph"):
+            r = BK("%s|%s" % (d, a))
+            cells.append(chip(False, "leaked %d/%d" % (r["leakage"], r["records"])) if r["leakage"] else
+                         chip(True, "verified %d/%d" % (r["verified"], r["records"])) if r["verified"] else
+                         '<span class="chip">no rule (not detected) 0/%d</span>' % r["records"])
+        brow.append(["<b>%s</b>" % NAMES[a]] + cells)
+    S.append('''<section class="pb"><h2>Evaluation 3 · Did blocking stop the attack?</h2>
+<p class="lead">Against lateral movement, the graph’s block held and the baseline’s leaked. Against the other attacks, only the baseline blocked, and its blocks held.</p>%s
+<p>Both detectors installed their lateral-movement block quickly, about %.1f s after the first attack packet, when only the first host had been contacted. What differed was the rule. The baseline acted on its login-attack label and blocked one conversation (<code>%s</code>), so the attack went on to reach %s. The graph acted on its lateral-movement label and blocked all of h4 (<code>%s</code>), and nothing more arrived anywhere.</p>
+<div class="pair">%s%s</div>
+<p class="cap">Attack packets from h4 counted at each target over time (C5, baseline trial 1 and graph trial 2). Red lines are targets reached after the block was confirmed.</p>
+<p>The one graph record that was not verified (C5 trial 1) is an exception: its block came %.1f s in, after four hosts had been contacted, and its drop counter did not rise, so it is counted as unverified rather than as verified or leaked. Of the baseline’s 30 records, %d had no confirmed rule (scans inside the mixed runs); every other non-lateral block verified.</p>
+<h2>Evaluation 4 · Did innocent users notice?</h2>
+<p class="lead">Every innocent web request during the attacks succeeded, under both detectors. A handful failed afterwards.</p>%s
+<p>The cause of the %d recovery-period failures was not established. The attacker’s own legitimate requests also failed, because a source-wide block covers everything h4 sends.</p></section>''' % (
+        table(["Attack", "Threshold baseline", "Graph detector"], brow), typical, lead_b["match"], ", ".join(lead_b["reached_after"]) or "no other host",
+        lead_g["match"], R.svg_arrivals(lead_b, "Baseline blocks h4 → h1:22 only", "base"), R.svg_arrivals(lead_g, "Graph blocks all of h4", "graph"),
+        graph_delays[-1], BK("baseline|all")["no_confirmation"],
+        table(["Detector blocking", "Innocent, during attacks", "Innocent, recovery", "Attacker’s own requests, during attack"],
+              [["<b>%s</b>" % ("Threshold baseline" if d == "baseline" else "Graph detector"),
+                chip(inn[d][0]["successes"] == inn[d][0]["attempts"], pct(inn[d][0]["successes"], inn[d][0]["attempts"], 2)) + " %s of %s" % ("{:,}".format(inn[d][0]["successes"]), "{:,}".format(inn[d][0]["attempts"])),
+                "%s of %s (%d failed)" % ("{:,}".format(inn[d][1]["successes"]), "{:,}".format(inn[d][1]["attempts"]), inn[d][1]["attempts"] - inn[d][1]["successes"]),
+                "%s (%d of %d)" % (pct(DL("%s|compromised|attack" % d)["successes"], DL("%s|compromised|attack" % d)["attempts"]), DL("%s|compromised|attack" % d)["successes"], DL("%s|compromised|attack" % d)["attempts"])]
+               for d in ("baseline", "graph")]),
+        sum(inn[d][1]["attempts"] - inn[d][1]["successes"] for d in ("baseline", "graph"))))
+
+    S.append('''<section class="pb"><h2>Evaluation 5 · Cost and speed</h2>
+<p class="lead">The graph is about ten times slower than the baseline, but both are negligible next to the 10-second window.</p>%s%s
+<h2>Conclusion</h2>
+<ol class="concl">
+<li><b>Graph structure identifies lateral movement.</b> Only the graph named it correctly (%d/5 vs %d/5), which was the core question of the project. Both detectors found the attacker; the difference is the label.</li>
+<li><b>The label decides whether blocking works.</b> The graph’s source-wide block was verified in %d of %d lateral records with no leakage. The baseline’s narrower, mislabelled block leaked in %d of %d.</li>
+<li><b>Simple thresholds still cover more ground.</b> The baseline detected all four attack types and its blocks held against scans, floods and login retries. The graph cannot see attacks that don’t change who talks to whom.</li>
+<li><b>Safe and cheap.</b> Every innocent request during attacks succeeded. Computation is under 2 ms per window, and blocks reach both switches in about 10–13 ms.</li>
+<li><b>Not perfect.</b> Both detectors raised false alarms when normal traffic changed (%s and %s), and the graph was sensitive to attack order.</li></ol>
+<div class="answer"><p><b>Bottom line:</b> neither detector is enough on its own. Run both: the baseline for breadth, and the graph to recognise lateral movement and choose a block that actually contains it.</p></div>
+<h3>Limits of these results</h3>
+<p>One small emulated network (6 hosts, 2 switches), five trials per condition, and simulated attacks: the login attempts don’t authenticate, and the lateral movement is a contact pattern, not a real compromise. The baseline’s mislabel comes from its rule order and thresholds; a different rule priority might fix it without a graph, which this study did not test. The combined policy above was not evaluated. The results show the trade-off in this testbed; they do not prove production accuracy or scalability.</p>
+<p class="note">Every number comes from the project’s published result tables. All %d evidence checksums were re-verified when this document was generated, and no experiment was re-run or re-tuned. An earlier campaign (22 September 2026) had receivers that could not observe traffic. Its detection results showed the same pattern, but its blocking results are superseded by this one.</p></section>''' % (
+        R.svg_bars([("Threshold baseline", cost["baseline_ms"]["mean"], "base", "%.2f ms" % cost["baseline_ms"]["mean"]), ("Graph detector", cost["graph_ms"]["mean"], "graph", "%.2f ms" % cost["graph_ms"]["mean"])],
+                   2.0, lambda v: "2 ms per 10 s window"),
+        table(["Measure", "Result"], [["Controller CPU (whole application)", "%.1f%% on average" % cost["cpu_percent"]["mean"]],
+                                      ["Controller memory", "%.0f MiB on average" % cost["rss_mib"]["mean"]],
+                                      ["Alert → block decision (C5)", "baseline %.1f ms · graph %.1f ms" % (R.tm("C5|baseline|alert_to_decision"), R.tm("C5|graph|alert_to_decision"))],
+                                      ["Decision → both switches confirm (C5)", "baseline %.1f ms · graph %.1f ms" % (R.tm("C5|baseline|decision_to_confirmation"), R.tm("C5|graph|decision_to_confirmation"))],
+                                      ["Attack start → alert", "≈ %.1f s (waiting for the 10 s window to close); floods ≈ %.1f s" % (P("lateral", "baseline")["mttd_mean"], P("dos", "baseline")["mttd_mean"])]]),
+        P("lateral", "graph")["class_exact"], P("lateral", "baseline")["class_exact"], gl["verified"], gl["records"], bl["leakage"], bl["records"],
+        pct(fg["flagged"], fg["eligible"], 2), pct(fb["flagged"], fb["eligible"], 2), len(R.checks)))
+    return S
+
+
+def appendices(R):
+    T, f, table, chip = R.T, R.f, R.table, R.chip
+    S = []
+    rows = [[r["case"], r["trial"], chip(r["baseline_detected"] == "True", "ID") + chip(r["baseline_class_exact"] == "True", "class"), f(r["baseline_mttd"]),
+             (chip(r["graph_detected"] == "True", "ID") + chip(r["graph_class_exact"] == "True", "class")) if r["graph_detected"] == "True" else chip(False, "missed"), f(r["graph_mttd"])]
+            for r in T["attacks"] if r["phase"] == "detection" and r["case"] in ("C2", "C3", "C4", "C5")]
+    S.append('<section class="appendix pb"><h2>Appendix A · Detection, per trial</h2><p>All 20 primary detection-only attack instances. “—” means the attack was missed, not zero delay. Source: attacks.csv.</p>%s</section>' %
+             table(["Case", "Trial", "Baseline", "Delay s", "Graph", "Delay s"], rows, "dense"))
+
+    label = {"verified": chip(True, "verified"), "observed_leakage": chip(False, "leaked"), "no_confirmation": '<span class="chip">no rule</span>',
+             "insufficient_drop_evidence": chip(None, "unverified: counter flat")}
+    rows = [[r["case"], r["trial"], NAMES[r["attack_class"]], r["mitigator"], f(r["rule_confirmation_delay"], 1, 1), f(r["post_confirmation_seconds"], 1, 1), label.get(r["blocking_outcome"], r["blocking_outcome"])]
+            for r in sorted(T["containment"], key=lambda r: (r["case"], r["mitigator"], int(r["trial"]), r["attack_class"])) if r["phase"] == "mitigation"]
+    S.append('<section class="appendix pb"><h2>Appendix B · Blocking, per attack record</h2><p>Every attack in the 50 blocking runs. C6 runs contain two attacks (lateral movement, then a scan), so each detector has 30 records across 25 runs. “Block at” is seconds from the first attack packet to confirmation on every targeted switch; “Sending after” is how long the attacker kept sending once the rule was in place. Source: containment.csv.</p>%s</section>' %
+             table(["Case", "Trial", "Attack", "Blocking", "Block at s", "Sending after s", "Outcome"], rows, "dense"))
+
+    lrow = []
+    for d in ("baseline", "graph"):
+        for g in ("compromised", "innocent"):
+            for p in ("pre_attack", "attack", "recovery"):
+                vals = [float(r["mean_success_latency"]) * 1000 for r in T["disruption"] if r["phase"] == "mitigation" and r["mitigator"] == d and r["group"] == g and r["period"] == p and r["mean_success_latency"]]
+                lrow.append([d, "Attack source" if g == "compromised" else "Innocent", p.replace("_", " "), len(vals), f(st.mean(vals)) if vals else "—", "%s–%s" % (f(min(vals)), f(max(vals))) if vals else "—"])
+    orow = []
+    for case in ["C%d" % i for i in range(1, 8)]:
+        rr = [r for r in T["overhead"] if r["phase"] == "detection" and r["case"] == case and r["period"] == "evaluation"]
+        mean = lambda k: st.mean(float(r[k]) for r in rr)
+        orow.append([case, f(mean("cpu_percent_mean")), f(mean("rss_bytes_mean") / 1048576), f(mean("baseline_seconds_mean") * 1000), f(mean("graph_total_seconds_mean") * 1000), f(mean("graph_cost_ratio"))])
+    trow = [[r["case"], r["mitigator"], {"alert_to_decision": "Alert → decision", "decision_to_confirmation": "Decision → all switches", "flowmod_to_confirmation": "FlowMod → barrier"}.get(r["metric"], r["metric"]),
+             r["n"], f(r["mean"], 1000) if r["n"] != "0" else "—"] for r in T["timing_summary"] if r["phase"] == "mitigation" and r["case"] in ("C3", "C5")]
+    S.append('<section class="appendix pb"><h2>Appendix C · Delivery, cost and timing</h2><h3>HTTP success latency (ms)</h3><p>Means of per-trial mean successful-response latency, with failed requests excluded.</p>%s<h3>Detection computation by condition</h3>%s<p>Five run means per row. The cost ratio is the mean of per-run graph/baseline ratios.</p><h3>Rule timing (C3 and C5)</h3>%s<p>All conditions are in timing_summary.csv. “—” means that detector never made a blocking decision in that case.</p></section>' % (
+        table(["Blocking", "Clients", "Period", "Trials", "Mean ms", "Range ms"], lrow, "dense"),
+        table(["Case", "CPU %", "RSS MiB", "Baseline ms", "Graph ms", "Cost ratio"], orow, "dense"),
+        table(["Case", "Blocking", "Metric", "n", "Mean ms"], trow, "dense")))
+
+    trace = [["O1 · Ryu IDS collecting PacketIn and flow stats", chip(True, "Delivered"), "PacketIn and 5 s flow-statistics polling feed shared 10 s windows. All 95 runs logged and valid."],
+             ["O2 · Detect scan, DoS, brute force, lateral movement", chip(None, "Partly"), "Baseline: all four. Graph: scan and lateral movement only. Brute force is simulated as repeated SYN attempts; lateral movement as a sequential-contact pattern."],
+             ["O3 · Automatic OpenFlow mitigation", chip(None, "Drop only"), "Drop rules with barrier confirmation and receiver-verified outcomes. Redirect and quarantine were not implemented."],
+             ["O4 · Compare detectors on identical traffic", chip(True, "Delivered"), "Detection, labels, false alarms, blocking, delay, rule latency, cost and disruption, on paired runs."],
+             ["Review 1 hypothesis", chip(None, "Refined"), "Review 1 expected the graph to improve lateral-movement <i>detection coverage</i>. Both detectors found the attacker; the graph’s advantage is correct classification and the effective block that follows."],
+             ["Gap 5 · scalability", chip(False, "Deferred"), "As declared in Review 1. One small topology; nothing here measures scaling."]]
+    S.append('''<section class="appendix pb"><h2>Appendix D · Measurement repair, Review 1 traceability and provenance</h2>
+<h3>What was repaired before this campaign</h3>
+<p>In the earlier campaign (22 September 2026), the receivers did not name a network interface. Inside the Mininet hosts, which have no default route, the capture library fell back to loopback, so every receiver reported zero attack packets even with blocking switched off. Short scans and login retries also ended before a block could be tested. For this campaign each receiver captures on its host’s real interface and must count five separately marked health-check packets before the run starts, or the run is invalid. Scans, floods and login retries now send for 40 seconds. Detector logic, weights, thresholds, seeds, pacing and blocking policy were unchanged. The calibrated thresholds were imported, not re-tuned.</p>
+<h3>Review 1 plan → delivered</h3>%s
+<h3>Provenance</h3>%s
+<p class="note">This is an empirical results report built on the Review 1 literature survey. It makes no claim that graph-based detection is new in the wider literature.</p></section>''' % (
+        table(["Review 1 item", "Status", "What was delivered"], trace, "trace"),
+        table(["Identifier", "Value"], [["Campaign evidence", "<code>%s</code> (measurement protocol %s)" % (R.E.name, R.M.get("measurement_protocol_version", "—"))],
+                                        ["Frozen source content hash", "<code>%s</code>" % R.M["source_hash"]],
+                                        ["Container image", "<code>%s</code>" % R.M["image_id"]],
+                                        ["Curated files checksum-verified", "%d" % len(R.checks)]], "ids")))
+    return S

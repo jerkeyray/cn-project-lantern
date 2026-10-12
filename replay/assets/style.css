@@ -61,7 +61,7 @@ h2{font-size:14px;font-weight:600;margin:0}
 .hits tbody tr{cursor:pointer}.hits tbody tr:hover{background:var(--soft)}
 .hits td{white-space:nowrap}.mark-t{font-size:12.5px;margin-left:8px}.mark-t small{color:var(--faint);margin-left:6px}
 .mark{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;font-size:11px;font-weight:700;vertical-align:middle}
-.mark.hit{background:var(--good-bg);color:var(--good)}.mark.part{background:var(--warn-bg);color:var(--warn)}.mark.miss{background:var(--bad-bg);color:var(--bad)}
+.mark.none{background:var(--soft);color:var(--muted)}.mark.hit{background:var(--good-bg);color:var(--good)}.mark.part{background:var(--warn-bg);color:var(--warn)}.mark.miss{background:var(--bad-bg);color:var(--bad)}
 .legend-line{font-size:12px;color:var(--muted);margin:10px 0 0;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
 .hbar{display:grid;grid-template-columns:78px 1fr auto;gap:2px 12px;align-items:center;margin:10px 0}.hbar-track{height:14px;background:var(--soft);border-radius:2px;overflow:hidden}.hbar-fill{height:100%;border-radius:2px}.hbar-fill.base{background:var(--base)}.hbar-fill.graph{background:var(--graph)}.hbar b{font-size:15px;font-weight:600}.hbar-name{font-size:12.5px;font-weight:600}.hbar small{grid-column:2/-1;font-size:11.5px;color:var(--muted)}
 .split{display:grid;grid-template-columns:1fr 1fr;gap:18px}.who{margin:0 0 6px;font-size:12.5px;font-weight:600}
@@ -141,7 +141,7 @@ summary{cursor:pointer;font-size:12.5px;font-weight:500}summary>span{margin-left
 .explanation .icon{font-size:16px;line-height:1.3}
 .shortcut{font-size:11px;color:var(--faint);margin:8px 0 0}
 #receiver-chart,#http-chart{width:100%;height:auto;display:block}
-.axis{stroke:var(--line);fill:none}.chart-label{font-size:11px;fill:var(--muted)}.cursor{stroke:var(--faint);stroke-dasharray:3 3}
+.axis{stroke:var(--line);fill:none}.chart-label{font-size:11px;fill:var(--muted)}.cursor{stroke:var(--faint);stroke-dasharray:3 3}.block-mark{stroke:var(--bad);stroke-width:1.5;stroke-dasharray:4 3}
 .ser-0{stroke:var(--target)}.ser-1{stroke:var(--graph)}.ser-2{stroke:var(--recv)}.ser-3{stroke:#8958a0}.ser-4{stroke:#91702b}.ser-5{stroke:var(--bad)}
 .dot-in{fill:var(--graph);stroke:var(--card);stroke-width:1}.dot-src{fill:var(--card);stroke:var(--target);stroke-width:1.5}.x-fail{stroke:var(--bad);stroke-width:1.5}
 .chart-legend{font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;flex-wrap:wrap;gap:4px 14px}

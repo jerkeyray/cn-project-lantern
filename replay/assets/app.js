@@ -5,28 +5,38 @@ const esc = value => String(value ?? 'unavailable').replace(/[&<>"']/g,c=>({'&':
 const label = kind => String(kind).replaceAll('_',' ')
 const fmt = value => value == null || value === '' ? 'unavailable' : Number(value).toFixed(2)
 const host = ip => catalog?.topology.hosts.find(h=>h.ip===ip)?.id || ip
-const pct = (n,d) => d ? (100*n/d).toFixed(1)+'%' : 'n/a'
+const pct = (n,d) => d ? (100*n/d).toFixed(2)+'%' : 'n/a'
 let catalog, run, time=0, playing=false, lastFrame=null, lastPaint=0, generation=0, view={start:0,end:1}
 const positions={h1:[80,62],h2:[80,165],h3:[80,268],s1:[290,165],s2:[490,165],h4:[700,62],h5:[700,165],server:[700,268]}
 const className=c=>catalog?.overview?.names?.[c] || (c==='graph_anomaly'?'generic graph anomaly':label(c))
 
 // Chapter copy: what to watch in trial 1, and the published result across all five trials.
-const chapters={
+// Chapter copy. "watch" describes the chapter's own trial; "takeaway" is computed from the published tables.
+let chapters={}
+function chapterCopy(o){
+ const P=(a,d)=>o.primary[`${a}|${d}`],FP=(p,d)=>o.false_positives[`${p}|${d}`],B=k=>o.blocking?.[k],OR=(a,d)=>o.order?.[`${a}|${d}`]
+ const bl=B('baseline|lateral'),gl=B('graph|lateral'),fb=FP('benign','baseline'),fg=FP('benign','graph')
+ const measured=o.mitigation?.graph?.receiver_evidence_available,unmeasured='Blocking outcomes were not measurable in this campaign: its receivers could not observe traffic.'
+ const inn=d=>['attack','recovery'].map(p=>o.delivery[`${d}|innocent|${p}`]).reduce((a,r)=>[a[0]+r.successes,a[1]+r.attempts],[0,0])
+ const [gi,gn]=inn('graph')
+ const ord=d=>o.attacks.filter(a=>OR(a,d)).map(a=>`${o.names[a].toLowerCase()} ${OR(a,d).detected}/${OR(a,d).instances}`).join(', ')
+ chapters={
  'Source versus class':{case:'C5 · detection',q:'Both flag h4, but as what?',
-  watch:'Around 150 s both detectors flag h4 in the same window. Compare the attack class each one reports.',
-  takeaway:'Both identified the source in 5/5 trials. Only the graph labelled it sequential contact (5/5 vs 0/5). The baseline\'s SYN-retry rule fired because the contacts touched SSH port 22.'},
- 'Baseline mitigation':{case:'C5 · baseline acts',q:'Does a confirmed rule stop it?',
-  watch:'The baseline acts on its SYN-retry label with a narrow h4→h1:22 pair rule. Both switches confirm it, but the contacts to other hosts never match that rule.',
-  takeaway:'Rules were confirmed in 25/30 baseline mitigation records, but 0/30 met the independent blocking criterion.'},
- 'Graph mitigation':{case:'C5 · graph acts',q:'Is blocking independently verified?',
-  watch:'The graph issues a source-wide drop on h4. Watch the switch confirmations, the receiver counts flattening and innocent HTTP continuing.',
-  takeaway:'All 10 graph-verified blocks were sequential-contact records (C5/C6). Every innocent request succeeded (2,304/2,304).'},
+  watch:'A few seconds into the attack, both detectors flag h4 in the same window. Compare the attack type each one reports.',
+  takeaway:`Both found the attacker in ${P('lateral','baseline').detected}/5 trials. Only the graph named it lateral movement (${P('lateral','graph').class_exact}/5 vs ${P('lateral','baseline').class_exact}/5). The baseline's login-retry rule fired first because one contact hit SSH port 22.`},
+ 'Baseline mitigation':{case:'C5 · baseline acts',q:'Does its block stop the attack?',
+  watch:'The baseline acts on its login-retry label with a narrow h4→h1:22 rule. Both switches confirm it, but watch the receiver chart: h2, h3 and h5 still receive attack packets afterwards.',
+  takeaway:!measured?unmeasured:bl&&bl.records?`Attack packets kept arriving after the block in ${bl.leakage}/${bl.records} lateral-movement records. Against the other attacks, its blocks held (${B('baseline|all').verified} verified overall).`:''},
+ 'Graph mitigation':{case:'C5 · graph acts',q:'Does its block stop the attack?',
+  watch:'Trial 2 (typical). The graph blocks all of h4 about 4.5 s in, after the first host. The receiver chart stays flat for every other target, and innocent HTTP keeps flowing.',
+  takeaway:!measured?unmeasured:gl&&gl.records?`Block verified in ${gl.verified}/${gl.records} lateral records, with no leakage in any. The exception is trial 1, where the block came late. Innocent requests served: ${gi.toLocaleString()} of ${gn.toLocaleString()}.`:''},
  'Legitimate change':{case:'C1 · benign',q:'What happens when normal traffic shifts?',
-  watch:'There is no attack here, only scheduled legitimate peer changes. Every candidate is a false alarm. Cooldown hides some operational alerts but not the candidates.',
-  takeaway:'Flagged host-windows: baseline 30/273 (11.0%), graph 14/273 (5.1%). Both produce false alarms.'},
+  watch:'There is no attack here, only scheduled legitimate changes in who talks to whom. Every flag is a false alarm.',
+  takeaway:`Flagged windows: baseline ${fb.flagged}/${fb.eligible} (${pct(fb.flagged,fb.eligible)}), graph ${fg.flagged}/${fg.eligible} (${pct(fg.flagged,fg.eligible)}). Both produce false alarms.`},
  'Attack order':{case:'C7 · reversed',q:'Does attack order matter?',
-  watch:'The order is now SYN retry, then scan, then sequential contact. The profiles learn online, so earlier traffic changes later scores.',
-  takeaway:'Both detectors found sequential contact in 5/5 reversed trials. Neither found the scan or SYN retry in this order.'}}
+  watch:'The order is now login retries, then scan, then lateral movement. Both detectors keep learning as traffic arrives, so earlier attacks shape later scores.',
+  takeaway:o.order?`Attacks caught in reversed order. Baseline: ${ord('baseline')}. Graph: ${ord('graph')}.`:''}}
+}
 
 async function json(path){const r=await fetch(path);if(!r.ok)throw new Error(`Unable to load ${path}: HTTP ${r.status}`);return r.json()}
 function fail(error){$('error').hidden=false;$('error').textContent=error.message;playing=false}
@@ -38,48 +48,63 @@ addEventListener('hashchange',route)
 /* ---------- results overview ---------- */
 function renderOverview(){
  const o=catalog.overview;if(!o)return
- const P=(a,d)=>o.primary[`${a}|${d}`],FP=(p,d)=>o.false_positives[`${p}|${d}`],D=k=>o.delivery[k]
+ const P=(a,d)=>o.primary[`${a}|${d}`],FP=(p,d)=>o.false_positives[`${p}|${d}`],D=k=>o.delivery[k],B=k=>o.blocking?.[k]
  const caseFor={portscan:'C2',dos:'C3',bruteforce:'C4',lateral:'C5'}
  const q=(id,question,answer,visual,cta)=>{$(id).innerHTML=`<div class="q-text"><h2>${question}</h2><p>${answer}</p>${cta||''}</div><div class="q-visual">${visual}</div>`}
- const replayLink=(chapter,t,text)=>`<a class="cta" href="#replay&chapter=${chapter}&t=${t}">${text} →</a>`
- // 1. Detection: one symbol per cell.
+ const link=(chapter,at,text)=>`<a class="cta" href="#replay&chapter=${chapter}${at?'&at='+at:''}">${text} →</a>`
+ const legend=items=>`<p class="legend-line">${items.map(([c,s,t])=>`<span class="mark ${c}">${s}</span> ${t}`).join(' ')}</p>`
+ const head=`<thead><tr><th></th><th><i class="sw-base"></i>Baseline</th><th><i class="sw-graph"></i>Graph</th></tr></thead>`
+ // 1. Detection.
  const mark=r=>r.detected===0?['miss','✗','missed']:r.class_exact===r.instances?['hit','✓','caught']:['part','!','caught, wrong type']
- const grid=`<table class="hits"><thead><tr><th></th><th><i class="sw-base"></i>Baseline</th><th><i class="sw-graph"></i>Graph</th></tr></thead><tbody>${o.attacks.map(a=>`<tr data-case="${caseFor[a]}" tabindex="0" title="Replay ${caseFor[a]} trial 1"><th>${o.names[a]}</th>${['baseline','graph'].map(d=>{const r=P(a,d),[c,s,t]=mark(r);return `<td><span class="mark ${c}">${s}</span><span class="mark-t">${t}<small>${r.detected}/5</small></span></td>`}).join('')}</tr>`).join('')}</tbody></table><p class="legend-line"><span class="mark hit">✓</span> caught and named correctly <span class="mark part">!</span> caught, wrong attack type <span class="mark miss">✗</span> missed</p>`
- q('q-detect','Which attacks did each detector catch?',`The baseline caught all four. The graph is the only one that named <b>sequential contact</b> (lateral movement) correctly, 5 times out of 5. It missed the DoS and SYN-retry floods because they don't change who talks to whom.`,grid,replayLink(1,150.3,'See both detectors flag the same host'))
+ q('q-detect','Which attacks did each detector catch?',
+  `The baseline caught all four attack types. The graph is the only one that named <b>lateral movement</b> (the sequential-contact attack) correctly (${P('lateral','graph').class_exact}/5 vs ${P('lateral','baseline').class_exact}/5). It missed floods and login retries, which don't change who talks to whom.`,
+  `<table class="hits">${head}<tbody>${o.attacks.map(a=>`<tr data-case="${caseFor[a]}" tabindex="0" title="Replay ${caseFor[a]} trial 1"><th>${o.names[a]}</th>${['baseline','graph'].map(d=>{const r=P(a,d),[c,sym,t]=mark(r);return `<td><span class="mark ${c}">${sym}</span><span class="mark-t">${t}<small>${r.detected}/${r.instances}</small></span></td>`}).join('')}</tr>`).join('')}</tbody></table>`+legend([['hit','✓','caught and named correctly'],['part','!','caught, wrong attack type'],['miss','✗','missed']]),
+  link(1,'detect','See both detectors flag the same host'))
  // 2. False alarms.
- const fb=FP('benign','baseline'),fg=FP('benign','graph')
+ const fb=FP('benign','baseline'),fg=FP('benign','graph'),fdb=FP('detection','baseline'),fdg=FP('detection','graph')
  const bar=(v,max,cls,label,sub)=>`<div class="hbar"><span class="hbar-name"><i class="sw-${cls}"></i>${cls==='base'?'Baseline':'Graph'}</span><div class="hbar-track"><div class="hbar-fill ${cls}" data-w="${Math.max(1.5,v/max*100)}"></div></div><b>${label}</b><small>${sub}</small></div>`
- q('q-false','How often did normal traffic trigger a false alarm?',`When legitimate traffic patterns changed, the graph raised about <b>half as many</b> false alarms as the baseline. Neither was perfect. During ordinary traffic in the detection runs, neither raised any (0 of ${FP('detection','baseline').eligible} windows).`,
-  bar(fb.flagged,30,'base',pct(fb.flagged,fb.eligible),`${fb.flagged} of ${fb.eligible} windows`)+bar(fg.flagged,30,'graph',pct(fg.flagged,fg.eligible),`${fg.flagged} of ${fg.eligible} windows`),replayLink(4,'','Watch a false alarm'))
- // 3. Blocking.
- const mb=o.mitigation.baseline,mg=o.mitigation.graph
- const blk=(m,cls)=>`<div class="big-pair"><div><b class="num ${cls}">${m.verified}<small>/30</small></b><span>blocks proven to work</span></div><div><b class="num dim">${m.confirmed}<small>/30</small></b><span>rules installed on switches</span></div></div>`
- q('q-block','When a detector blocked the attacker, did it actually stop the attack?',`Every block the graph installed was <b>independently proven to stop the traffic</b>. The baseline installed more rules, but none could be proven to work. It labelled lateral movement as a SYN retry, so it blocked only one conversation (h4→h1:22) while the attack continued to other hosts.`,
-  `<div class="split"><div><p class="who"><i class="sw-base"></i>Baseline</p>${blk(mb,'base')}</div><div><p class="who"><i class="sw-graph"></i>Graph</p>${blk(mg,'graph')}</div></div>`,replayLink(3,151,'See the graph block confirm'))
+ const fmax=Math.max(fb.flagged/fb.eligible,fg.flagged/fg.eligible)*1.25
+ q('q-false','How often did normal traffic trigger a false alarm?',
+  `When legitimate traffic patterns changed, the graph raised about <b>half as many</b> false alarms as the baseline. Neither was perfect. With ordinary traffic, the baseline flagged ${fdb.flagged} of ${fdb.eligible.toLocaleString()} windows and the graph ${fdg.flagged}.`,
+  bar(fb.flagged/fb.eligible,fmax,'base',pct(fb.flagged,fb.eligible),`${fb.flagged} of ${fb.eligible} windows`)+bar(fg.flagged/fg.eligible,fmax,'graph',pct(fg.flagged,fg.eligible),`${fg.flagged} of ${fg.eligible} windows`),
+  link(4,'','Watch a false alarm'))
+ // 3. Blocking, per attack type: verified / all records, with leakage called out.
+ const cell=r=>!r||!r.records?'<td>—</td>':r.leakage?`<td><span class="mark miss">✗</span><span class="mark-t">leaked<small>${r.leakage}/${r.records}</small></span></td>`
+  :r.verified?`<td><span class="mark hit">✓</span><span class="mark-t">blocked<small>${r.verified}/${r.records}</small></span></td>`
+  :`<td><span class="mark none">–</span><span class="mark-t">no block<small>0/${r.records}</small></span></td>`
+ const bl=B('baseline|lateral'),gl=B('graph|lateral')
+ const measured=o.blocking&&o.mitigation.graph.receiver_evidence_available
+ $('results-title').textContent=measured?'The graph detector recognised and stopped lateral movement that the baseline misread. The baseline covered more kinds of attack.':'The graph detector recognised lateral movement that the baseline misread. The baseline covered more kinds of attack.'
+ q('q-block','When a detector blocked the attacker, did it actually stop the attack?',measured?
+  `Against <b>lateral movement</b>, both blocked about 4.5 s in. The baseline’s narrow rule (h4 → h1:22 only) let attack packets reach other hosts afterwards in ${bl.leakage}/${bl.records} cases. The graph blocked all of h4: verified in ${gl.verified}/${gl.records}, with no leakage in any. Against the other attacks only the baseline blocked, and its blocks held.`
+  :'Not measurable in this campaign: its receivers could not observe traffic, so whether attack packets still arrived after a block is unknown. Use the repaired campaign for blocking results.',
+  measured?`<table class="hits">${head}<tbody>${o.attacks.map(a=>`<tr><th>${o.names[a]}</th>${cell(B('baseline|'+a))}${cell(B('graph|'+a))}</tr>`).join('')}</tbody></table>`+legend([['hit','✓','block verified'],['miss','✗','attack packets got through'],['none','–','no rule installed (attack not detected)']]):'',
+  measured?link(2,'confirm','Watch the baseline’s block leak')+' &nbsp; '+link(3,'confirm','Watch the graph’s block hold'):'')
  // 4. Collateral damage.
- const inn=d=>['attack','recovery'].map(p=>D(`${d}|innocent|${p}`)).reduce((a,r)=>[a[0]+r.successes,a[1]+r.attempts],[0,0])
- const src=d=>D(`${d}|compromised|attack`)
- q('q-users','Did innocent users notice?',`No. Every web request from the innocent hosts succeeded, under both detectors. Only the blocked attacker's own requests failed, which is expected because the block covers all of its traffic.`,
-  `<div class="split">${['baseline','graph'].map(d=>{const [ok,n]=inn(d),s=src(d);return `<div><p class="who"><i class="sw-${d==='baseline'?'base':'graph'}"></i>${d==='baseline'?'Baseline':'Graph'} blocking</p><div class="big-pair"><div><b class="num good">${pct(ok,n)}</b><span>innocent requests served<br><small>${ok.toLocaleString()} of ${n.toLocaleString()}</small></span></div><div><b class="num dim">${pct(s.successes,s.attempts)}</b><span>attacker's requests served<br><small>during the attack</small></span></div></div></div>`}).join('')}</div>`)
+ const inn=(d,p)=>D(`${d}|innocent|${p}`),src=d=>D(`${d}|compromised|attack`)
+ q('q-users','Did innocent users notice?',
+  `Almost never. Every innocent web request during the attacks succeeded under both detectors. Afterwards, ${inn('baseline','recovery').attempts-inn('baseline','recovery').successes} (baseline) and ${inn('graph','recovery').attempts-inn('graph','recovery').successes} (graph) recovery-period requests failed out of about ${Math.round(inn('graph','recovery').attempts/10)*10}. The attacker’s own requests failed too, which is expected with a block on all of its traffic.`,
+  `<div class="split">${['baseline','graph'].map(d=>{const a=inn(d,'attack'),r=inn(d,'recovery'),s=src(d);return `<div><p class="who"><i class="sw-${d==='baseline'?'base':'graph'}"></i>${d==='baseline'?'Baseline':'Graph'} blocking</p><div class="big-pair"><div><b class="num good">${pct(a.successes,a.attempts)}</b><span>innocent requests served during attacks<br><small>${a.successes.toLocaleString()} of ${a.attempts.toLocaleString()} · recovery ${r.successes.toLocaleString()} of ${r.attempts.toLocaleString()}</small></span></div><div><b class="num dim">${pct(s.successes,s.attempts)}</b><span>attacker’s requests served<br><small>during the attack</small></span></div></div></div>`}).join('')}</div>`)
  // 5. Cost.
- const c=o.cost
- q('q-cost','Is the graph detector expensive to run?',`It is slower than the baseline, but both are tiny. The graph needs ${c.graph_ms.mean.toFixed(2)} ms of work in each 10-second window, about 0.01% of the time available. The whole controller averaged ${c.cpu_percent.mean.toFixed(1)}% CPU.`,
-  bar(c.baseline_ms.mean,1.6,'base',`${c.baseline_ms.mean.toFixed(2)} ms`,'per 10 s window')+bar(c.graph_ms.mean,1.6,'graph',`${c.graph_ms.mean.toFixed(2)} ms`,'per 10 s window')+`<p class="legend-line">Scale: 0 to 1.6 ms. A 10 s window is 10,000 ms.</p>`)
+ const c=o.cost,scale=Math.max(c.graph_ms.mean,c.baseline_ms.mean)*1.2
+ q('q-cost','Is the graph detector expensive to run?',
+  `It is slower than the baseline, but both are tiny. The graph needs ${c.graph_ms.mean.toFixed(2)} ms of work in each 10-second window, about ${(c.graph_ms.mean/100).toFixed(3)}% of the time available. The whole controller averaged ${c.cpu_percent.mean.toFixed(1)}% CPU.`,
+  bar(c.baseline_ms.mean,scale,'base',`${c.baseline_ms.mean.toFixed(2)} ms`,'per 10 s window')+bar(c.graph_ms.mean,scale,'graph',`${c.graph_ms.mean.toFixed(2)} ms`,'per 10 s window')+`<p class="legend-line">A 10 s window is 10,000 ms.</p>`)
  document.querySelectorAll('.hbar-fill').forEach(el=>{el.style.width=el.dataset.w+'%'})
- document.querySelectorAll('.hits tbody tr').forEach(tr=>{const go=()=>{const r=catalog.runs.find(x=>x.metadata.phase==='detection'&&x.metadata.case===tr.dataset.case&&x.metadata.trial===1);if(r){location.hash='#replay';load(r.id)}};tr.onclick=go;tr.onkeydown=e=>{if(e.key==='Enter')go()}})
+ document.querySelectorAll('#q-detect .hits tbody tr').forEach(tr=>{const go=()=>{const r=catalog.runs.find(x=>x.metadata.phase==='detection'&&x.metadata.case===tr.dataset.case&&x.metadata.trial===1);if(r){location.hash='#replay';load(r.id)}};tr.onclick=go;tr.onkeydown=e=>{if(e.key==='Enter')go()}})
  $('definitions').innerHTML=[
-  ['Caught','The detector flagged the attacking host (h4) in a window that overlaps the attack. Five mitigation-off trials per attack.'],
+  ['Caught','The detector flagged the attacking host (h4) in a window that overlaps the attack. Five trials per attack, with blocking switched off.'],
   ['Named correctly','The flag also gave the right attack type.'],
-  ['False alarm','A 10-second window in which a host that was not attacking got flagged. The benign runs schedule legitimate changes in who talks to whom.'],
-  ['Rule installed','Every targeted switch confirmed the drop rule (OpenFlow barrier reply).'],
-  ['Proven to work','Attack packets kept being sent for at least 3 s after the rule was installed, the switch drop counters rose, and nothing more arrived at any target.'],
+  ['False alarm','A 10-second window in which a host that was not attacking got flagged.'],
+  ['Block verified','After the rule was confirmed on every switch, the attacker kept sending for at least 3 s, the rule’s drop counter rose, and no more attack packets arrived at any target. The receivers pass a capture health check before each run.'],
+  ['Leaked','Attack packets reached a target after the rule was confirmed.'],
   ['Uncertainty','Five trials per condition. A 5/5 result has a 95% interval of 57–100%, and 0/5 has 0–43%.']].map(([t,d])=>`<dt>${t}</dt><dd>${d}</dd>`).join('')
  const t=k=>o.timing[k]?.mean_ms
  $('objectives').innerHTML=[
-  ['O1','Ryu IDS collecting PacketIn and flow statistics (Algorithm A)',`Delivered: 10 s windows with stats polled every 5 s. All ${o.validity.runs} runs logged and valid.`],
-  ['O2','Detect port scan, DoS, brute force and lateral movement','Baseline: all four. Graph: scan and lateral only. Brute force was simplified to repeated SYN attempts.'],
-  ['O3','Automatic OpenFlow mitigation (Algorithm D)',`Drop rules delivered. Both switches confirm ${t('C5|graph|decision_to_confirmation').toFixed(1)} ms after the decision (C5, graph). Redirection not implemented.`],
-  ['O4','Compare both detectors on identical traffic','Delivered across coverage, false alarms, delay, rule latency, cost and disruption.']]
+  ['O1','Ryu IDS collecting PacketIn and flow statistics (Algorithm A)',`Delivered: 10 s windows, stats polled every 5 s. ${o.validity.valid}/${o.validity.runs} runs passed validity checks.`],
+  ['O2','Detect port scan, DoS, brute force and lateral movement','Baseline: all four. Graph: scan and lateral movement only. Brute force is simulated as repeated SYN attempts.'],
+  ['O3','Automatic OpenFlow mitigation (Algorithm D)',`Drop rules delivered. Both switches confirm ${(t('C5|graph|decision_to_confirmation')?.toFixed(1) ?? '—')} ms after the decision (C5, graph). Redirection was not implemented.`],
+  ['O4','Compare both detectors on identical traffic','Delivered across detection, false alarms, blocking, delay, rule latency, cost and disruption.']]
   .map(([n,t,d])=>`<li><b class="o">${n}</b><div><b>${t}</b><p>${d}</p></div></li>`).join('')
 }
 
@@ -93,7 +118,7 @@ async function load(id){const entry=catalog.runs.find(r=>r.id===id);const ticket
   time=0;setView();time=view.start
   const chapter=catalog.chapters.find(c=>c.id===id),copy=chapter&&chapters[chapter.title]
   document.querySelectorAll('#chapters button').forEach(b=>b.classList.toggle('active',b.dataset.id===id))
-  $('brief').innerHTML=copy?`<div><b>What to watch in trial 1</b>${esc(copy.watch)}</div><div><b>Across all 5 trials</b>${esc(copy.takeaway)}</div>`:''
+  $('brief').innerHTML=copy?`<div><b>What to watch in trial ${chapter.trial??1}</b>${esc(copy.watch)}</div><div><b>Campaign results</b>${esc(copy.takeaway)}</div>`:''
   const m=run.metadata
   $('run-title').textContent=`${m.case} · ${m.phase} · trial ${m.trial}`
   $('run-subtitle').textContent=`${m.mitigator==='none'?'Mitigation disabled (both detectors observe only)':`Actuator: ${m.mitigator} detector installs rules; the other observes`} · seed ${m.seed} · ${run.run}`
@@ -158,7 +183,7 @@ function stageStrip(state){const p=pipeline(run,state),D=state.detectors
   ['C','Graph',p.graph==='flagged'?className(D.graph.latest.data.attack_class):'no candidate',p.graph==='flagged'?'alarm':''],
   ['','Decide',p.decide==='actuating'?`${dec.data.detector}: ${label(dec.data.action)}`:p.decide==='observe'?'observe only':'waiting',p.decide==='actuating'?'on':''],
   ['D','Install rule',p.install==='disabled'?'mitigation off':p.install==='confirmed'?`all switches ✓ (${replies.length} replies)`:p.install==='pending'?`${replies.length} switch replies`:'waiting',p.install==='confirmed'?'on':p.install==='disabled'?'off':''],
-  ['','Verify block',p.verify==='disabled'?'not assessed':p.verify==='pending'?'assessed at run end':p.verify==='verified'?'✓ verified':'✗ unverified',p.verify==='verified'?'good':p.verify==='unverified'?'bad':p.verify==='disabled'?'off':'']]
+  ['','Verify block',p.verify==='disabled'?'not assessed':p.verify==='pending'?'assessed at run end':p.verify==='unavailable'?'receiver evidence unavailable':p.verify==='verified'?'✓ verified':'✗ unverified',p.verify==='verified'?'good':p.verify==='unverified'?'bad':p.verify==='disabled'?'off':'']]
  $('pipeline').innerHTML=items.map(([a,s,d,c])=>`<li class="${c}"><span class="a">${a?'Algorithm '+a:'&nbsp;'}</span><span class="s">${s}</span><span class="d" title="${esc(d)}">${esc(d)}</span></li>`).join('')}
 
 function description(e){const d=e.data
@@ -166,7 +191,7 @@ function description(e){const d=e.data
  if(e.kind==='attack_ended')return ['🏁',`The ${className(d.attack_class)} generator sent its last packet (${d.sent ?? '?'} sends in total).`]
  if(e.kind==='mitigation_decided')return [d.actuate?'⚡':'👁',`${d.detector} decides on a ${label(d.action)}${d.actuate?' and installs it.':', but it only observes in this run.'} ${d.reason?'('+d.reason+')':''}`]
  if(e.kind==='all_switches_confirmed')return ['✅','Every targeted switch has confirmed the rule. Blocking still needs independent evidence.']
- if(e.kind==='blocking_assessment')return [d.observed_blocking==='verified'?'🛡':'❔',`Retrospective assessment for ${className(d.attack_class)}: blocking ${d.observed_blocking}.`]
+ if(e.kind==='blocking_assessment')return [d.observed_blocking==='verified'?'🛡':'❔',`Retrospective assessment for ${className(d.attack_class)}: blocking ${d.blocking_outcome || d.observed_blocking}.`]
  if(['alert','detector_candidate'].includes(e.kind))return ['⚠',`${d.detector} ${e.kind==='alert'?'raises an alert':'flags a candidate'}: ${className(d.attack_class)} from ${host(d.src_ip)} (${e.attribution}).`]
  if(e.kind==='barrier_reply')return ['🔒',`s${d.dpid} confirms rule ${d.cookie} (${d.match}) in ${d.install_latency!=null?(d.install_latency*1000).toFixed(1)+' ms':'unknown time'}.`]
  if(e.kind==='flowmod_sent')return ['📤',`FlowMod sent to s${d.dpid}: ${d.match}`]
@@ -182,7 +207,7 @@ function trail(state){$('events').replaceChildren()
 function renderResults(){const rows=run.summary.detections||[]
  let html=`<table class="results-table"><thead><tr><th>Detector</th><th>Identified</th><th>Class exact</th><th>Benign windows flagged</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(r.detector)}</td><td>${Number(r.attacks)?r.detected+'/'+r.attacks:'No attacks'}</td><td>${Number(r.attacks)?r.class_exact+'/'+r.attacks:'—'}</td><td>${r.false_positive_host_windows}/${r.benign_host_windows}</td></tr>`).join('')}</tbody></table>`
  if(run.metadata.mitigator==='none')html+='<div class="assessment">Mitigation disabled · no containment claim.</div>'
- else html+=(run.summary.containment||[]).map(r=>`<div class="assessment">${esc(className(r.attack_class))}: <b>${esc(r.observed_blocking)}</b> blocking · rule-confirmation delay ${fmt(r.rule_confirmation_delay)} s</div>`).join('')
+ else html+=(run.summary.containment||[]).map(r=>`<div class="assessment">${esc(className(r.attack_class))}: <b>${esc(run.metadata.measurement_protocol_version === 2 ? r.blocking_outcome : "receiver evidence unavailable (historical counter-based result)")}</b> blocking · rule-confirmation delay ${fmt(r.rule_confirmation_delay)} s</div>`).join('')
  const delivery=(run.summary.disruption||[]).filter(r=>['attack','recovery'].includes(r.period)&&Number(r.attempts)>0)
  if(delivery.length)html+=`<table class="results-table"><thead><tr><th>HTTP client group</th><th>Period</th><th>Success / attempts</th></tr></thead><tbody>${delivery.map(r=>`<tr><td>${r.group==='innocent'?'Innocent':'Attack source'}</td><td>${esc(r.period)}</td><td>${r.successes}/${r.attempts}</td></tr>`).join('')}</tbody></table>`
  $('trial-results').innerHTML=rows.length?html:'Published detector summary unavailable.'}
@@ -199,6 +224,8 @@ function charts(state){
  let svg=chartBase(max)
  entries.forEach(([key,points],i)=>{const pts=points.filter(([t])=>inView(t));if(pts.length)svg+=`<polyline points="${pts.map(([t,v])=>`${X(t)},${145-v/max*125}`).join(' ')}" class="ser-${i%6}" stroke-width="2" fill="none"><title>${key.split('|').map(host).join(' → ')}</title></polyline>`})
  if(!entries.length)svg+=`<text x="335" y="80" text-anchor="middle" class="chart-label">${run.truths.length?'No marked attack packets counted at receivers yet':'No attack in this run'}</text>`
+ const block=state.events.find(e=>e.kind==='all_switches_confirmed')  // mark the block, so later rises read as leakage
+ if(block&&inView(block.time))svg+=`<line x1="${X(block.time)}" x2="${X(block.time)}" y1="12" y2="145" class="block-mark"/><text x="${X(block.time)+4}" y="22" class="chart-label">block confirmed</text>`
  $('receiver-chart').innerHTML=svg
  $('receiver-legend').innerHTML=entries.map(([key,points],i)=>`<span><i class="lg-${i%6}"></i>${esc(key.split('|').map(host).join(' → '))}: <b>${points.at(-1)[1]}</b></span>`).join('')
  const sources=new Set(run.truths.map(t=>t.src));if(!sources.size)sources.add('10.0.0.4')
@@ -235,6 +262,7 @@ document.addEventListener('keydown',e=>{if(!run||$('view-replay').hidden||['INPU
  if(e.code==='Space'){e.preventDefault();$('play').click()}else if(e.key==='ArrowRight'){e.preventDefault();$('next').click()}else if(e.key==='ArrowLeft'){e.preventDefault();$('previous').click()}else if(e.key==='Home'){e.preventDefault();$('restart').click()}})
 
 try{catalog=await json('data/index.json')
+ chapterCopy(catalog.overview)
  const n=catalog.runs.filter(r=>!['pilot','calibration'].includes(r.metadata.phase)).length
  $('inventory').textContent=`${n} evaluation runs + ${catalog.runs.length-n} supplementary`
  for(const [i,c] of catalog.chapters.entries()){const b=document.createElement('button'),copy=chapters[c.title]||{};b.dataset.id=c.id
@@ -242,5 +270,7 @@ try{catalog=await json('data/index.json')
  route();renderOverview()
  // Deep link: #replay&chapter=3&t=150 opens a chapter at a recorded position.
  const q=new URLSearchParams(location.hash.split('&').slice(1).join('&')),ch=catalog.chapters[Number(q.get('chapter'))-1]||catalog.chapters[0]
- await load(ch.id);if(q.get('t'))seek(Number(q.get('t')));requestAnimationFrame(frame)
+ await load(ch.id)
+ const at=q.get('at'),first=k=>run.events.find(e=>e.time!==null&&e.kind===k)?.time
+ if(at)seek((at==='confirm'?first('all_switches_confirmed'):first('detector_candidate'))??view.start);else if(q.get('t'))seek(Number(q.get('t')));requestAnimationFrame(frame)
 }catch(error){fail(error)}
