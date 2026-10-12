@@ -4,7 +4,7 @@
 
 **Six hosts · two OpenFlow switches · one Ryu controller · 95 evaluation trials, all valid · receiver-verified blocking**
 
-[Final conclusion](docs/final-conclusion.md) · [Results](docs/results.md) ·
+[Results and conclusion](docs/results.md) ·
 [Methodology](docs/evaluation.md) · [Replay guide](docs/replay.md) ·
 [Evidence](submission-repaired-20261012/) · [Submission guide](docs/submission.md) ·
 [Team](AUTHORS.md)
