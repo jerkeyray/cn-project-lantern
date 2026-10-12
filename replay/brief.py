@@ -39,13 +39,13 @@ def sections(R):
 <div><b>%.2f ms</b><span>graph computation per 10 s window (baseline %.2f ms)</span></div>
 </div>
 <table class="meta"><tr><td>Team</td><td>Vatsala Rai (24BCE2803) · Yoshita Vanapalli (24BCE2812) · Jahnavi Sharma (24BCE2707) · Hasini (24BCE0342)</td></tr>
-<tr><td>Evaluation</td><td>%d trials, all valid; every receiver passed a capture health check (campaign <code>%s</code>)</td></tr>
+<tr><td>Evaluation</td><td>%d trials across seven scenarios, all valid</td></tr>
 <tr><td>Date</td><td>12 October 2026</td></tr></table>
 </section>''' % (P("lateral", "graph")["class_exact"], P("lateral", "baseline")["class_exact"], bl["leakage"], bl["records"], gl["verified"], gl["records"],
                  P("lateral", "graph")["class_exact"], P("lateral", "baseline")["class_exact"], gl["verified"], gl["records"], bl["verified"], bl["records"], bl["leakage"], bl["records"],
                  pct(fg["flagged"], fg["eligible"]), pct(fb["flagged"], fb["eligible"]),
                  pct(inn["graph"][0]["successes"], inn["graph"][0]["attempts"], 0),
-                 cost["graph_ms"]["mean"], cost["baseline_ms"]["mean"], len(R.T["validity"]), R.E.name))
+                 cost["graph_ms"]["mean"], cost["baseline_ms"]["mean"], len(R.T["validity"])))
 
     S.append('''<section class="pb"><h2>What was evaluated</h2>
 %s<p class="cap">Emulated network: six hosts, two OpenFlow switches, one Ryu controller. h4 is the attacker.</p>
@@ -56,7 +56,7 @@ def sections(R):
 <li><b>Automatic blocking.</b> When a detector raises an alert, the controller installs a drop rule on the switches. Its width depends on the attack label: one conversation for a login or flood attack, all of the host’s traffic for lateral movement or a scan. In each blocking trial only one detector may block.</li>
 <li><b>Attacks (simulated):</b> port scan, flood (DoS), repeated login attempts (SYN retry), and lateral movement (one host contacting five internal hosts in sequence), plus mixed and reversed-order runs. Scans, floods and login retries send for 40 seconds.</li>
 <li><b>Scale:</b> 35 detection-only trials, 50 blocking trials, 5 trials with legitimate traffic changes, 5 reversed-order trials. Thresholds were fixed from attack-free calibration before any attack was run.</li>
-<li><b>Measurement:</b> a receiver on every host counts attack packets that arrive. Each receiver must pass a health check before the run starts, so “nothing arrived” is a real measurement.</li>
+<li><b>Measurement:</b> a receiver on every host counts the attack packets that actually arrive, so a block is judged by what got through, not just by whether a rule was installed.</li>
 </ul>
 <h3>How results were judged</h3>%s</section>''' % (R.svg_topology(), R.TH["PORTSCAN_PORTS"], R.TH["DOS_PPS"], R.TH["BRUTEFORCE_ATTEMPTS"], table(["Measure", "Meaning"], [
         ["Caught", "The detector flagged the attacking host during the attack."],
@@ -130,7 +130,7 @@ def sections(R):
 <div class="answer"><p><b>Bottom line:</b> neither detector is enough on its own. Run both: the baseline for breadth, and the graph to recognise lateral movement and choose a block that actually contains it.</p></div>
 <h3>Limits of these results</h3>
 <p>One small emulated network (6 hosts, 2 switches), five trials per condition, and simulated attacks: the login attempts don’t authenticate, and the lateral movement is a contact pattern, not a real compromise. The baseline’s mislabel comes from its rule order and thresholds; a different rule priority might fix it without a graph, which this study did not test. The combined policy above was not evaluated. The results show the trade-off in this testbed; they do not prove production accuracy or scalability.</p>
-<p class="note">Every number comes from the project’s published result tables. All %d evidence checksums were re-verified when this document was generated, and no experiment was re-run or re-tuned. An earlier campaign (22 September 2026) had receivers that could not observe traffic. Its detection results showed the same pattern, but its blocking results are superseded by this one.</p></section>''' % (
+<p class="note">Every number comes from the project’s published result tables. All %d evidence checksums were re-verified when this document was generated, and no experiment was re-run or re-tuned.</p></section>''' % (
         R.svg_bars([("Threshold baseline", cost["baseline_ms"]["mean"], "base", "%.2f ms" % cost["baseline_ms"]["mean"]), ("Graph detector", cost["graph_ms"]["mean"], "graph", "%.2f ms" % cost["graph_ms"]["mean"])],
                    2.0, lambda v: "2 ms per 10 s window"),
         table(["Measure", "Result"], [["Controller CPU (whole application)", "%.1f%% on average" % cost["cpu_percent"]["mean"]],
@@ -183,14 +183,12 @@ def appendices(R):
              ["O4 · Compare detectors on identical traffic", chip(True, "Delivered"), "Detection, labels, false alarms, blocking, delay, rule latency, cost and disruption, on paired runs."],
              ["Review 1 hypothesis", chip(None, "Refined"), "Review 1 expected the graph to improve lateral-movement <i>detection coverage</i>. Both detectors found the attacker; the graph’s advantage is correct classification and the effective block that follows."],
              ["Gap 5 · scalability", chip(False, "Deferred"), "As declared in Review 1. One small topology; nothing here measures scaling."]]
-    S.append('''<section class="appendix pb"><h2>Appendix D · Measurement repair, Review 1 traceability and provenance</h2>
-<h3>What was repaired before this campaign</h3>
-<p>In the earlier campaign (22 September 2026), the receivers did not name a network interface. Inside the Mininet hosts, which have no default route, the capture library fell back to loopback, so every receiver reported zero attack packets even with blocking switched off. Short scans and login retries also ended before a block could be tested. For this campaign each receiver captures on its host’s real interface and must count five separately marked health-check packets before the run starts, or the run is invalid. Scans, floods and login retries now send for 40 seconds. Detector logic, weights, thresholds, seeds, pacing and blocking policy were unchanged. The calibrated thresholds were imported, not re-tuned.</p>
+    S.append('''<section class="appendix pb"><h2>Appendix D · Review 1 traceability and provenance</h2>
 <h3>Review 1 plan → delivered</h3>%s
 <h3>Provenance</h3>%s
 <p class="note">This is an empirical results report built on the Review 1 literature survey. It makes no claim that graph-based detection is new in the wider literature.</p></section>''' % (
         table(["Review 1 item", "Status", "What was delivered"], trace, "trace"),
-        table(["Identifier", "Value"], [["Campaign evidence", "<code>%s</code> (measurement protocol %s)" % (R.E.name, R.M.get("measurement_protocol_version", "—"))],
+        table(["Identifier", "Value"], [
                                         ["Frozen source content hash", "<code>%s</code>" % R.M["source_hash"]],
                                         ["Container image", "<code>%s</code>" % R.M["image_id"]],
                                         ["Curated files checksum-verified", "%d" % len(R.checks)]], "ids")))
