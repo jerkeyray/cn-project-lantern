@@ -143,7 +143,7 @@ def svg_topology():
            "h4": (590, 40), "h5": (590, 100), "server": (590, 160)}
     role = {"h1": "workstation", "h2": "workstation", "h3": "workstation", "h4": "attack source",
             "h5": "auth-service role", "server": "real HTTP service"}
-    s = '<svg viewBox="0 0 660 200" class="fig">'
+    s = '<svg viewBox="0 0 660 200" class="fig topo">'
     for a, b in [("h1", "s1"), ("h2", "s1"), ("h3", "s1"), ("s1", "s2"), ("s2", "h4"), ("s2", "h5"), ("s2", "server")]:
         s += '<line x1="%d" y1="%d" x2="%d" y2="%d" class="ln"/>' % (*pos[a], *pos[b])
     for n, (x, y) in pos.items():
@@ -219,7 +219,7 @@ svg.fig{width:100%;height:auto;display:block;margin:2mm 0 3mm}
 .trk{fill:var(--soft)}rect.base{fill:var(--base)}rect.graph{fill:var(--graph)}rect.graph.lite{fill:#86b6ef}rect.good{fill:var(--good)}rect.atk{fill:#fbe3cc;stroke:var(--atk)}
 .appendix h2{font-size:13pt}
 .answer{border-left:3px solid var(--graph);background:#f4f8fc;padding:3mm 4mm;margin:5mm 0;border-radius:0 2mm 2mm 0}.answer p{margin:0 0 2mm}.answer p:last-child{margin:0}.answer .kicker{margin:0 0 1.5mm}.concl li{margin-bottom:2mm}ul ul{margin-top:1mm}
-svg.fig.cov{width:70%}.pair{display:grid;grid-template-columns:1fr 1fr;gap:4mm}svg.fig.half{margin:0}.blk{fill:#fbe5e3;opacity:.45}.mk{stroke:var(--bad);stroke-width:1.2;stroke-dasharray:3 2}.ser{fill:none;stroke-width:1.8}.ser.base{stroke:var(--base)}.ser.graph{stroke:var(--graph)}.ser.leak{stroke:var(--bad);stroke-width:2.4}
+svg.fig.cov{width:70%}svg.fig.topo{width:72%}.keep{break-inside:avoid}.pair{display:grid;grid-template-columns:1fr 1fr;gap:4mm}svg.fig.half{margin:0}.blk{fill:#fbe5e3;opacity:.45}.mk{stroke:var(--bad);stroke-width:1.2;stroke-dasharray:3 2}.ser{fill:none;stroke-width:1.8}.ser.base{stroke:var(--base)}.ser.graph{stroke:var(--graph)}.ser.leak{stroke:var(--bad);stroke-width:2.4}
 """
 
 def build(sections, name, title, footer):

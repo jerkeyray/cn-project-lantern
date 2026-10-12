@@ -24,7 +24,7 @@ def sections(R):
     S = []
 
     S.append('''<section class="cover">
-<p class="kicker">Computer Networks · Semester Project · Results summary</p>
+<p class="kicker">Final report</p>
 <h1>Graph-Based SDN Controller-Integrated Intrusion Detection and Automated Mitigation</h1>
 <p class="sub">Does a network-wide “who talks to whom” graph detect and stop internal lateral movement better than conventional per-flow threshold rules?</p>
 <div class="answer"><p class="kicker">Conclusion</p>
@@ -47,7 +47,10 @@ def sections(R):
                  pct(inn["graph"][0]["successes"], inn["graph"][0]["attempts"], 0),
                  cost["graph_ms"]["mean"], cost["baseline_ms"]["mean"], len(R.T["validity"])))
 
-    S.append('''<section class="pb"><h2>What was evaluated</h2>
+    S.append('''<section class="pb"><h2>The problem</h2>
+<p>Attackers who get inside a network rarely stop at one machine. They move laterally: from the first compromised host they contact other internal machines one by one, looking for the next way in. Each of those connections looks ordinary on its own, so detectors that judge one flow at a time can miss the pattern or misread it as something else. And in most networks, detection and response are separate, so an alert waits for a person before anything is blocked.</p>
+<p>Software-defined networking (SDN) offers a way to address both problems. Its central controller sees traffic statistics from every switch, so it can build a network-wide picture of who talks to whom, and it can push blocking rules into the switches directly. This project builds two detectors into one SDN controller and asks whether network-wide graph analysis detects, classifies and stops lateral movement better than conventional per-flow threshold rules, at acceptable cost and without disrupting legitimate users.</p>
+<h2>How it was tested</h2>
 %s<p class="cap">Emulated network: six hosts, two OpenFlow switches, one Ryu controller. h4 is the attacker.</p>
 <ul>
 <li><b>Two detectors, same traffic.</b> Both run inside the SDN controller and look at identical 10-second windows.
@@ -58,7 +61,7 @@ def sections(R):
 <li><b>Scale:</b> 35 detection-only trials, 50 blocking trials, 5 trials with legitimate traffic changes, 5 reversed-order trials. Thresholds were fixed from attack-free calibration before any attack was run.</li>
 <li><b>Measurement:</b> a receiver on every host counts the attack packets that actually arrive, so a block is judged by what got through, not just by whether a rule was installed.</li>
 </ul>
-<h3>How results were judged</h3>%s</section>''' % (R.svg_topology(), R.TH["PORTSCAN_PORTS"], R.TH["DOS_PPS"], R.TH["BRUTEFORCE_ATTEMPTS"], table(["Measure", "Meaning"], [
+<div class="keep"><h3>How results were judged</h3>%s</div></section>''' % (R.svg_topology(), R.TH["PORTSCAN_PORTS"], R.TH["DOS_PPS"], R.TH["BRUTEFORCE_ATTEMPTS"], table(["Measure", "Meaning"], [
         ["Caught", "The detector flagged the attacking host during the attack."],
         ["Named correctly", "It also reported the right attack type."],
         ["False alarm", "A 10-second window in which a non-attacking host was flagged."],
@@ -73,7 +76,7 @@ def sections(R):
         rows.append(["<b>%s</b>" % NAMES[a], cell(P(a, "baseline")), cell(P(a, "graph"))])
     order = O["order"]
     ordtxt = lambda d: ", ".join("%s %d/%d" % (NAMES[a].lower(), order["%s|%s" % (a, d)]["detected"], order["%s|%s" % (a, d)]["instances"]) for a in ATTACKS if "%s|%s" % (a, d) in order)
-    S.append('''<section class="pb"><h2>Evaluation 1 · Detection</h2>
+    S.append('''<section><h2>Evaluation 1 · Detection</h2>
 <p class="lead">The baseline caught every attack type. The graph caught the scan and the lateral movement, and it was the only detector that named lateral movement correctly.</p>%s%s
 <p class="cap">Share of trials in which the attacker was caught, with 95%% intervals (grey: baseline, blue: graph). Five trials per attack, blocking switched off.</p>
 <ul><li><b>Why the baseline misnamed lateral movement:</b> one of h4’s contacts was a connection to h1’s SSH port (22). That tripped the login-retry rule first in all five trials (“2 connection attempts to an authentication port”), so the baseline called the attack a login attack.</li>
@@ -130,7 +133,7 @@ def sections(R):
 <div class="answer"><p><b>Bottom line:</b> neither detector is enough on its own. Run both: the baseline for breadth, and the graph to recognise lateral movement and choose a block that actually contains it.</p></div>
 <h3>Limits of these results</h3>
 <p>One small emulated network (6 hosts, 2 switches), five trials per condition, and simulated attacks: the login attempts don’t authenticate, and the lateral movement is a contact pattern, not a real compromise. The baseline’s mislabel comes from its rule order and thresholds; a different rule priority might fix it without a graph, which this study did not test. The combined policy above was not evaluated. The results show the trade-off in this testbed; they do not prove production accuracy or scalability.</p>
-<p class="note">Every number comes from the project’s published result tables. All %d evidence checksums were re-verified when this document was generated, and no experiment was re-run or re-tuned.</p></section>''' % (
+</section>''' % (
         R.svg_bars([("Threshold baseline", cost["baseline_ms"]["mean"], "base", "%.2f ms" % cost["baseline_ms"]["mean"]), ("Graph detector", cost["graph_ms"]["mean"], "graph", "%.2f ms" % cost["graph_ms"]["mean"])],
                    2.0, lambda v: "2 ms per 10 s window"),
         table(["Measure", "Result"], [["Controller CPU (whole application)", "%.1f%% on average" % cost["cpu_percent"]["mean"]],
@@ -139,7 +142,7 @@ def sections(R):
                                       ["Decision → both switches confirm (C5)", "baseline %.1f ms · graph %.1f ms" % (R.tm("C5|baseline|decision_to_confirmation"), R.tm("C5|graph|decision_to_confirmation"))],
                                       ["Attack start → alert", "≈ %.1f s (waiting for the 10 s window to close); floods ≈ %.1f s" % (P("lateral", "baseline")["mttd_mean"], P("dos", "baseline")["mttd_mean"])]]),
         P("lateral", "graph")["class_exact"], P("lateral", "baseline")["class_exact"], gl["verified"], gl["records"], bl["leakage"], bl["records"],
-        pct(fg["flagged"], fg["eligible"], 2), pct(fb["flagged"], fb["eligible"], 2), len(R.checks)))
+        pct(fg["flagged"], fg["eligible"], 2), pct(fb["flagged"], fb["eligible"], 2)))
     return S
 
 
@@ -177,19 +180,4 @@ def appendices(R):
         table(["Case", "CPU %", "RSS MiB", "Baseline ms", "Graph ms", "Cost ratio"], orow, "dense"),
         table(["Case", "Blocking", "Metric", "n", "Mean ms"], trow, "dense")))
 
-    trace = [["O1 · Ryu IDS collecting PacketIn and flow stats", chip(True, "Delivered"), "PacketIn and 5 s flow-statistics polling feed shared 10 s windows. All 95 runs logged and valid."],
-             ["O2 · Detect scan, DoS, brute force, lateral movement", chip(None, "Partly"), "Baseline: all four. Graph: scan and lateral movement only. Brute force is simulated as repeated SYN attempts; lateral movement as a sequential-contact pattern."],
-             ["O3 · Automatic OpenFlow mitigation", chip(None, "Drop only"), "Drop rules with barrier confirmation and receiver-verified outcomes. Redirect and quarantine were not implemented."],
-             ["O4 · Compare detectors on identical traffic", chip(True, "Delivered"), "Detection, labels, false alarms, blocking, delay, rule latency, cost and disruption, on paired runs."],
-             ["Review 1 hypothesis", chip(None, "Refined"), "Review 1 expected the graph to improve lateral-movement <i>detection coverage</i>. Both detectors found the attacker; the graph’s advantage is correct classification and the effective block that follows."],
-             ["Gap 5 · scalability", chip(False, "Deferred"), "As declared in Review 1. One small topology; nothing here measures scaling."]]
-    S.append('''<section class="appendix pb"><h2>Appendix D · Review 1 traceability and provenance</h2>
-<h3>Review 1 plan → delivered</h3>%s
-<h3>Provenance</h3>%s
-<p class="note">This is an empirical results report built on the Review 1 literature survey. It makes no claim that graph-based detection is new in the wider literature.</p></section>''' % (
-        table(["Review 1 item", "Status", "What was delivered"], trace, "trace"),
-        table(["Identifier", "Value"], [
-                                        ["Frozen source content hash", "<code>%s</code>" % R.M["source_hash"]],
-                                        ["Container image", "<code>%s</code>" % R.M["image_id"]],
-                                        ["Curated files checksum-verified", "%d" % len(R.checks)]], "ids")))
     return S
